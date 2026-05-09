@@ -1028,6 +1028,21 @@ class SessionStore:
             self._save()
             return True
 
+    def list_resume_pending(self) -> List[SessionEntry]:
+        """Return persisted sessions that still need restart recovery.
+
+        The returned entries are detached snapshots, not live mutable objects.
+        Startup recovery can enumerate pending work without reaching into
+        SessionStore internals or accidentally mutating the in-memory cache.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            return [
+                SessionEntry.from_dict(entry.to_dict())
+                for entry in self._entries.values()
+                if entry.resume_pending
+            ]
+
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
 

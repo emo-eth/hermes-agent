@@ -319,6 +319,24 @@ class TestClearResumePending:
         assert store.clear_resume_pending("no-such-key") is False
 
 
+class TestListResumePending:
+    def test_lists_only_pending_sessions_as_snapshots(self, tmp_path):
+        store = _make_store(tmp_path)
+        pending = store.get_or_create_session(_make_source(chat_id="pending"))
+        not_pending = store.get_or_create_session(_make_source(chat_id="not-pending"))
+        store.mark_resume_pending(pending.session_key, reason="restart_timeout")
+
+        listed = store.list_resume_pending()
+
+        assert [entry.session_key for entry in listed] == [pending.session_key]
+        assert listed[0].resume_pending is True
+        assert listed[0].resume_reason == "restart_timeout"
+        assert listed[0] is not store._entries[pending.session_key]
+        listed[0].resume_pending = False
+        assert store._entries[pending.session_key].resume_pending is True
+        assert store._entries[not_pending.session_key].resume_pending is False
+
+
 # ---------------------------------------------------------------------------
 # SessionStore.get_or_create_session resume_pending behaviour
 # ---------------------------------------------------------------------------

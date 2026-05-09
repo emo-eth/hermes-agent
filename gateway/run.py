@@ -3023,15 +3023,12 @@ class GatewayRunner:
         """
         window = _auto_continue_freshness_window()
         try:
-            with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
-                self.session_store._ensure_loaded_locked()  # noqa: SLF001
-                candidates = [
-                    entry for entry in self.session_store._entries.values()  # noqa: SLF001
-                    if entry.resume_pending
-                    and not entry.suspended
-                    and entry.origin is not None
-                    and entry.resume_reason in self._AUTO_RESUME_REASONS
-                ]
+            candidates = [
+                entry for entry in self.session_store.list_resume_pending()
+                if not entry.suspended
+                and entry.origin is not None
+                and entry.resume_reason in self._AUTO_RESUME_REASONS
+            ]
         except Exception as exc:
             logger.warning("Failed to enumerate resume-pending sessions: %s", exc)
             return 0

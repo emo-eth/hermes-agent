@@ -134,6 +134,11 @@ def make_restart_runner(
     runner.pairing_store = MagicMock()
     runner.session_store = MagicMock()
     runner.session_store._entries = {}
+    runner.session_store.list_resume_pending.side_effect = lambda: [
+        entry
+        for entry in runner.session_store._entries.values()
+        if getattr(entry, "resume_pending", False)
+    ]
     runner.delivery_router = MagicMock()
 
     platform_adapter = adapter or RestartTestAdapter()
