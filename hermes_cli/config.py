@@ -989,6 +989,18 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Jiminy-style final-response accountability gate. When enabled, Hermes
+    # checks high-risk completion claims (tests passed, pushed, scheduled, etc.)
+    # against current-turn tool evidence before persisting/delivering the reply.
+    "response_verifier": {
+        "enabled": False,
+        "mode": "warn",  # warn | block
+        "receipt_dir": "~/.hermes/response-verifier",
+        "max_evidence_chars": 50000,
+        "fail_closed": False,
+        "include_receipt_in_response": False,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
@@ -2910,7 +2922,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "auxiliary", "custom_providers", "context", "memory", "response_verifier", "gateway",
     "sessions",
 }
 
