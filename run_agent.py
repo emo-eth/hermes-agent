@@ -14426,8 +14426,10 @@ class AIAgent:
                     # than returning a warning-only answer to the user.
                     try:
                         from agent.response_verifier import (
+                            build_verifier_evidence_bundle,
                             build_verifier_retry_prompt,
                             evaluate_response_verifier,
+                            render_blocked_response,
                         )
 
                         verifier_cfg, response_verification = evaluate_response_verifier(
@@ -14436,12 +14438,14 @@ class AIAgent:
                             session_id=self.session_id or "",
                             model=self.model,
                             platform=getattr(self, "platform", None) or "",
+                            evidence_start_index=current_turn_user_idx,
                         )
                         if (
                             response_verification is not None
                             and response_verification.action == "block"
                             and jiminy_repair_attempts < verifier_cfg.max_repairs
                         ):
+                            final_msg["_jiminy_blocked_candidate"] = True
                             jiminy_repair_attempts += 1
                             _turn_exit_reason = "jiminy_retry"
                             self._emit_status(
@@ -14455,6 +14459,11 @@ class AIAgent:
                                     receipt=response_verification,
                                     attempt=jiminy_repair_attempts,
                                     max_repairs=verifier_cfg.max_repairs,
+                                    evidence_bundle=build_verifier_evidence_bundle(
+                                        messages=messages,
+                                        max_chars=verifier_cfg.max_evidence_chars,
+                                        evidence_start_index=current_turn_user_idx,
+                                    ),
                                 ),
                                 "_jiminy_retry": True,
                             })
@@ -14462,6 +14471,12 @@ class AIAgent:
                             self._session_messages = messages
                             self._save_session_log(messages)
                             continue
+                        if (
+                            response_verification is not None
+                            and response_verification.action == "block"
+                        ):
+                            final_response = render_blocked_response(response_verification)
+                            final_msg["content"] = final_response
                         if response_verification is not None:
                             jiminy_repair_attempts = 0
                     except Exception as exc:

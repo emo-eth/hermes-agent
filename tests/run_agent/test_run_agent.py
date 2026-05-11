@@ -1837,6 +1837,29 @@ class TestExecuteToolCalls:
         assert "Jiminy blocked" in second_call_messages[-1]["content"]
         assert "Tests passed" in second_call_messages[-2]["content"]
 
+    def test_run_conversation_does_not_deliver_blocked_jiminy_candidate_after_repair_budget(self, agent, tmp_path):
+        persisted = {}
+        agent._persist_session = lambda messages, *args, **kwargs: persisted.setdefault("messages", list(messages))
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._save_session_log = lambda *args, **kwargs: None
+        agent.client.chat.completions.create.return_value = _mock_response(content="Done. Tests passed.")
+
+        cfg = ResponseVerifierConfig(
+            enabled=True,
+            mode="block",
+            max_repairs=0,
+            receipt_dir=str(tmp_path),
+        )
+
+        with patch("agent.response_verifier.load_response_verifier_config", return_value=cfg):
+            result = agent.run_conversation("did you finish?")
+
+        assert "Done. Tests passed." not in result["final_response"]
+        assert result["response_verification"]["action"] == "block"
+        assert "Jiminy blocked" in result["final_response"]
+        assert not any(msg.get("_jiminy_retry") for msg in persisted["messages"])
+        assert not any(msg.get("_jiminy_blocked_candidate") for msg in persisted["messages"])
+
 
 class TestConcurrentToolExecution:
     """Tests for _execute_tool_calls_concurrent and dispatch logic."""
