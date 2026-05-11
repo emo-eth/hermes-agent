@@ -1834,7 +1834,11 @@ class TestExecuteToolCalls:
         assert agent.client.chat.completions.create.call_count == 2
         second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
         assert second_call_messages[-1]["role"] == "user"
-        assert "Jiminy blocked" in second_call_messages[-1]["content"]
+        retry_prompt = second_call_messages[-1]["content"]
+        assert "Jiminy blocked" in retry_prompt
+        assert "Current evidence available to repair against" in retry_prompt
+        assert "Current-turn transcript/evidence" in retry_prompt
+        assert "did you finish?" in retry_prompt
         assert "Tests passed" in second_call_messages[-2]["content"]
 
     def test_run_conversation_does_not_deliver_blocked_jiminy_candidate_after_repair_budget(self, agent, tmp_path):
