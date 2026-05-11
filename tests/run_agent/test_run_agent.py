@@ -22,6 +22,7 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.response_verifier import ResponseVerifierConfig
 
 
 # ---------------------------------------------------------------------------
@@ -1808,6 +1809,33 @@ class TestExecuteToolCalls:
         output = captured.getvalue()
         assert "API call failed" not in output
         assert "Rate limit reached" not in output
+
+    def test_run_conversation_retries_jiminy_block_before_delivery(self, agent, tmp_path):
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._save_session_log = lambda *args, **kwargs: None
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="Done. Tests passed."),
+            _mock_response(content="I could not verify tests in this turn."),
+        ]
+
+        cfg = ResponseVerifierConfig(
+            enabled=True,
+            mode="block",
+            max_repairs=2,
+            receipt_dir=str(tmp_path),
+        )
+
+        with patch("agent.response_verifier.load_response_verifier_config", return_value=cfg):
+            result = agent.run_conversation("did you finish?")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "I could not verify tests in this turn."
+        assert agent.client.chat.completions.create.call_count == 2
+        second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        assert second_call_messages[-1]["role"] == "user"
+        assert "Jiminy blocked" in second_call_messages[-1]["content"]
+        assert "Tests passed" in second_call_messages[-2]["content"]
 
 
 class TestConcurrentToolExecution:

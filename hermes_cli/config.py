@@ -992,11 +992,14 @@ DEFAULT_CONFIG = {
     # Jiminy-style final-response accountability gate. When enabled, Hermes
     # checks high-risk completion claims (tests passed, pushed, scheduled, etc.)
     # against current-turn tool evidence before persisting/delivering the reply.
+    # In block/strict mode it privately retries blocked candidates before
+    # delivery, up to max_repairs.
     "response_verifier": {
         "enabled": False,
-        "mode": "warn",  # warn | block
+        "mode": "warn",  # warn | block | strict
         "receipt_dir": "~/.hermes/response-verifier",
         "max_evidence_chars": 50000,
+        "max_repairs": 1,
         "fail_closed": False,
         "include_receipt_in_response": False,
     },

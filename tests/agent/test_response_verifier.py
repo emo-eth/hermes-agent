@@ -73,3 +73,25 @@ def test_block_mode_replaces_unsupported_response(tmp_path: Path):
     assert receipt is not None
     assert receipt.action == "block"
     assert updated.startswith("Jiminy blocked this response")
+
+
+def test_retry_prompt_preserves_candidate_and_demands_evidence():
+    from agent.response_verifier import build_verifier_retry_prompt
+
+    receipt = verify_response(
+        response_text="Done. Tests passed.",
+        messages=[{"role": "user", "content": "ship it"}],
+        config=ResponseVerifierConfig(enabled=True, mode="block"),
+    )
+
+    prompt = build_verifier_retry_prompt(
+        candidate_response="Done. Tests passed.",
+        receipt=receipt,
+        attempt=1,
+        max_repairs=2,
+    )
+
+    assert "Jiminy blocked" in prompt
+    assert "Tests passed" in prompt
+    assert "current-turn tool evidence" in prompt
+    assert "Do not repeat" in prompt

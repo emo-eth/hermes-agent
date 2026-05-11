@@ -62,6 +62,7 @@ class ResponseVerifierConfig:
     mode: str = "warn"  # warn | block
     receipt_dir: str = "~/.hermes/response-verifier"
     max_evidence_chars: int = 50_000
+    max_repairs: int = 1
     fail_closed: bool = False
     include_receipt_in_response: bool = False
 
@@ -73,6 +74,7 @@ class ResponseVerifierConfig:
             mode=str(data.get("mode", "warn") or "warn").lower(),
             receipt_dir=str(data.get("receipt_dir", "~/.hermes/response-verifier") or "~/.hermes/response-verifier"),
             max_evidence_chars=int(data.get("max_evidence_chars", 50_000) or 50_000),
+            max_repairs=max(0, int(data.get("max_repairs", 1) or 0)),
             fail_closed=bool(data.get("fail_closed", False)),
             include_receipt_in_response=bool(data.get("include_receipt_in_response", False)),
         )
@@ -178,8 +180,54 @@ def verify_response(
 
     action = "allow"
     if findings:
-        action = "block" if cfg.mode == "block" else "warn"
+        action = "block" if cfg.mode in {"block", "strict"} else "warn"
     return VerificationReceipt(ok=not findings, action=action, findings=findings)
+
+
+def _finding_summary(receipt: VerificationReceipt) -> str:
+    return "; ".join(f"{f.code}: {f.message}" for f in receipt.findings)
+
+
+def build_verifier_retry_prompt(
+    *,
+    candidate_response: str,
+    receipt: VerificationReceipt,
+    attempt: int,
+    max_repairs: int,
+) -> str:
+    """Build the private retry instruction inserted after a blocked candidate."""
+    summary = _finding_summary(receipt)
+    return (
+        f"[System: Jiminy blocked your previous candidate response "
+        f"(repair attempt {attempt}/{max_repairs}).\n"
+        f"Issues: {summary}\n\n"
+        "Blocked candidate response:\n"
+        "```text\n"
+        f"{candidate_response}\n"
+        "```\n\n"
+        "Revise the final answer now. Do not repeat unsupported completion, "
+        "action, current-fact, or validation claims unless the current-turn tool evidence above proves them. "
+        "If evidence is missing, say exactly what is unverified or continue by calling the needed tools. "
+        "Return only the corrected user-facing answer or the required tool calls.]"
+    )
+
+
+def evaluate_response_verifier(
+    *,
+    response_text: str,
+    messages: list[dict[str, Any]],
+    session_id: str = "",
+    model: str = "",
+    platform: str = "",
+    config: ResponseVerifierConfig | None = None,
+) -> tuple[ResponseVerifierConfig, VerificationReceipt | None]:
+    """Run the configured verifier and write a receipt without changing text."""
+    cfg = config or load_response_verifier_config()
+    if not cfg.enabled or not response_text:
+        return cfg, None
+    receipt = verify_response(response_text=response_text, messages=messages, config=cfg)
+    receipt = _write_receipt(receipt, cfg=cfg, session_id=session_id, model=model, platform=platform)
+    return cfg, receipt
 
 
 def _write_receipt(
@@ -234,13 +282,21 @@ def apply_response_verifier(
     if not cfg.enabled or not response_text:
         return response_text, None
 
-    receipt = verify_response(response_text=response_text, messages=messages, config=cfg)
-    receipt = _write_receipt(receipt, cfg=cfg, session_id=session_id, model=model, platform=platform)
+    cfg, receipt = evaluate_response_verifier(
+        response_text=response_text,
+        messages=messages,
+        session_id=session_id,
+        model=model,
+        platform=platform,
+        config=cfg,
+    )
+    if receipt is None:
+        return response_text, None
 
     if receipt.action == "allow":
         return response_text, receipt
 
-    summary = "; ".join(f"{f.code}: {f.message}" for f in receipt.findings)
+    summary = _finding_summary(receipt)
     suffix = f"\n\n[Jiminy: {receipt.action} — {summary}"
     if cfg.include_receipt_in_response and receipt.receipt_path:
         suffix += f" Receipt: {receipt.receipt_path}"
