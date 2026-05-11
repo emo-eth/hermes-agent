@@ -11318,7 +11318,9 @@ class AIAgent:
         api_call_count = 0
         final_response = None
         interrupted = False
+        response_verification = None
         codex_ack_continuations = 0
+        jiminy_repair_attempts = 0
         length_continue_retries = 0
         truncated_tool_call_retries = 0
         truncated_response_prefix = ""
@@ -14416,6 +14418,54 @@ class AIAgent:
                         messages.pop()
 
                     messages.append(final_msg)
+
+                    # Jiminy hard gate: before delivering/persisting a final
+                    # response, validate accountability-sensitive claims against
+                    # current-turn evidence. In block mode, privately retry the
+                    # model with the blocked candidate and verifier issues rather
+                    # than returning a warning-only answer to the user.
+                    try:
+                        from agent.response_verifier import (
+                            build_verifier_retry_prompt,
+                            evaluate_response_verifier,
+                        )
+
+                        verifier_cfg, response_verification = evaluate_response_verifier(
+                            response_text=final_response,
+                            messages=messages,
+                            session_id=self.session_id or "",
+                            model=self.model,
+                            platform=getattr(self, "platform", None) or "",
+                        )
+                        if (
+                            response_verification is not None
+                            and response_verification.action == "block"
+                            and jiminy_repair_attempts < verifier_cfg.max_repairs
+                        ):
+                            jiminy_repair_attempts += 1
+                            _turn_exit_reason = "jiminy_retry"
+                            self._emit_status(
+                                f"🦗 Jiminy blocked unsupported claims — retrying "
+                                f"({jiminy_repair_attempts}/{verifier_cfg.max_repairs})"
+                            )
+                            messages.append({
+                                "role": "user",
+                                "content": build_verifier_retry_prompt(
+                                    candidate_response=final_response,
+                                    receipt=response_verification,
+                                    attempt=jiminy_repair_attempts,
+                                    max_repairs=verifier_cfg.max_repairs,
+                                ),
+                                "_jiminy_retry": True,
+                            })
+                            final_response = None
+                            self._session_messages = messages
+                            self._save_session_log(messages)
+                            continue
+                        if response_verification is not None:
+                            jiminy_repair_attempts = 0
+                    except Exception as exc:
+                        logger.warning("response verifier retry gate failed open: %s", exc)
                     
                     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                     if not self.quiet_mode:
@@ -14509,11 +14559,10 @@ class AIAgent:
         self._drop_trailing_empty_response_scaffolding(messages)
 
         # Jiminy/accountability gate: verify final response claims against the
-        # current turn transcript before persisting or delivering.  The verifier
-        # may append a warning or block the response, and mutates the last
-        # assistant message to keep stored history aligned with delivery.
-        response_verification = None
-        if final_response and not interrupted:
+        # current turn transcript before persisting or delivering.  Normal final
+        # responses are checked inside the loop so block mode can hard-retry;
+        # this fallback covers synthetic exits (budget/errors/guardrails).
+        if final_response and not interrupted and response_verification is None:
             try:
                 from agent.response_verifier import apply_response_verifier
 
