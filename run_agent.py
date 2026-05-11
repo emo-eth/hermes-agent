@@ -14507,6 +14507,26 @@ class AIAgent:
         # can replay assistant("(empty)") / recovery nudges and fall into the
         # same empty-response loop again.
         self._drop_trailing_empty_response_scaffolding(messages)
+
+        # Jiminy/accountability gate: verify final response claims against the
+        # current turn transcript before persisting or delivering.  The verifier
+        # may append a warning or block the response, and mutates the last
+        # assistant message to keep stored history aligned with delivery.
+        response_verification = None
+        if final_response and not interrupted:
+            try:
+                from agent.response_verifier import apply_response_verifier
+
+                final_response, response_verification = apply_response_verifier(
+                    response_text=final_response,
+                    messages=messages,
+                    session_id=self.session_id or "",
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+            except Exception as exc:
+                logger.warning("response verifier failed open: %s", exc)
+
         self._persist_session(messages, conversation_history)
 
         # ── Turn-exit diagnostic log ─────────────────────────────────────
@@ -14637,6 +14657,8 @@ class AIAgent:
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
         }
+        if response_verification is not None:
+            result["response_verification"] = response_verification.to_dict()
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()
         # If a /steer landed after the final assistant turn (no more tool
