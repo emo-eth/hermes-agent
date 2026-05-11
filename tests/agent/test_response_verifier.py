@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent.response_verifier import (
     ResponseVerifierConfig,
@@ -95,3 +96,50 @@ def test_retry_prompt_preserves_candidate_and_demands_evidence():
     assert "Tests passed" in prompt
     assert "current-turn tool evidence" in prompt
     assert "Do not repeat" in prompt
+
+
+def test_llm_judge_blocks_repair_verdict(monkeypatch):
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"verdict":"repair","issues":[{"code":"unsupported_push","message":"No git push evidence"}]}'
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr("agent.response_verifier.call_llm", fake_call_llm)
+
+    receipt = verify_response(
+        response_text="Done. I pushed it.",
+        messages=[{"role": "user", "content": "ship it"}],
+        config=ResponseVerifierConfig(enabled=True, mode="block", backend="llm"),
+    )
+
+    assert receipt.ok is False
+    assert receipt.action == "block"
+    assert [finding.code for finding in receipt.findings] == ["unsupported_push"]
+    assert calls[0]["task"] == "response_verifier"
+    assert "candidate response" in calls[0]["messages"][1]["content"].lower()
+
+
+def test_llm_judge_failure_fail_closed_blocks(monkeypatch):
+    def fake_call_llm(**kwargs):
+        raise RuntimeError("judge unavailable")
+
+    monkeypatch.setattr("agent.response_verifier.call_llm", fake_call_llm)
+
+    receipt = verify_response(
+        response_text="Looks fine.",
+        messages=[{"role": "user", "content": "status"}],
+        config=ResponseVerifierConfig(enabled=True, mode="block", backend="llm", fail_closed=True),
+    )
+
+    assert receipt.ok is False
+    assert receipt.action == "block"
+    assert receipt.findings[0].code == "llm_judge_failed"

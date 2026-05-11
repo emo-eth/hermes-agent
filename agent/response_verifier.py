@@ -17,6 +17,8 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from agent.auxiliary_client import call_llm
+
 logger = logging.getLogger(__name__)
 
 _DONE_PATTERNS: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
@@ -65,6 +67,10 @@ class ResponseVerifierConfig:
     max_repairs: int = 1
     fail_closed: bool = False
     include_receipt_in_response: bool = False
+    backend: str = "deterministic"  # deterministic | llm | hybrid
+    llm_provider: str = "auto"
+    llm_model: str = ""
+    llm_timeout: float = 30.0
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any] | None) -> "ResponseVerifierConfig":
@@ -77,6 +83,10 @@ class ResponseVerifierConfig:
             max_repairs=max(0, int(data.get("max_repairs", 1) or 0)),
             fail_closed=bool(data.get("fail_closed", False)),
             include_receipt_in_response=bool(data.get("include_receipt_in_response", False)),
+            backend=str(data.get("backend", "deterministic") or "deterministic").lower(),
+            llm_provider=str(data.get("llm_provider", data.get("provider", "auto")) or "auto"),
+            llm_model=str(data.get("llm_model", data.get("model", "")) or ""),
+            llm_timeout=float(data.get("llm_timeout", data.get("timeout", 30.0)) or 30.0),
         )
 
 
@@ -148,14 +158,7 @@ def _claim_has_evidence(response_text: str, evidence: str, pattern: re.Pattern[s
     return any(needle.lower() in evidence for needle in needles)
 
 
-def verify_response(
-    *,
-    response_text: str,
-    messages: Sequence[Mapping[str, Any]],
-    config: ResponseVerifierConfig | None = None,
-) -> VerificationReceipt:
-    """Return a deterministic accountability verdict for a final response."""
-    cfg = config or ResponseVerifierConfig(enabled=True)
+def _deterministic_findings(response_text: str, messages: Sequence[Mapping[str, Any]], cfg: ResponseVerifierConfig) -> list[VerificationFinding]:
     findings: list[VerificationFinding] = []
     evidence = _collect_evidence(messages, cfg.max_evidence_chars)
 
@@ -177,11 +180,150 @@ def verify_response(
                 message="Response appears to promise action without any tool evidence in the turn.",
             )
         )
+    return findings
 
+
+def _receipt_from_findings(findings: list[VerificationFinding], cfg: ResponseVerifierConfig) -> VerificationReceipt:
     action = "allow"
     if findings:
         action = "block" if cfg.mode in {"block", "strict"} else "warn"
     return VerificationReceipt(ok=not findings, action=action, findings=findings)
+
+
+def _extract_message_text(response: Any) -> str:
+    content = response.choices[0].message.content
+    if isinstance(content, str):
+        return content
+    return _stringify_content(content)
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.S | re.I)
+    if fenced:
+        stripped = fenced.group(1)
+    else:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            stripped = stripped[start : end + 1]
+    parsed = json.loads(stripped)
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM judge did not return a JSON object")
+    return parsed
+
+
+def _sanitize_issue_code(value: Any, fallback: str) -> str:
+    raw = str(value or fallback).strip().lower()
+    code = re.sub(r"[^a-z0-9_]+", "_", raw).strip("_")
+    return code or fallback
+
+
+def _llm_judge_receipt(
+    *,
+    response_text: str,
+    messages: Sequence[Mapping[str, Any]],
+    cfg: ResponseVerifierConfig,
+    deterministic_findings: list[VerificationFinding],
+) -> VerificationReceipt:
+    evidence = _collect_evidence(messages, cfg.max_evidence_chars)
+    transcript = _stringify_content(list(messages))[: cfg.max_evidence_chars]
+    deterministic_summary = [finding.__dict__ for finding in deterministic_findings]
+    system = (
+        "You are Jiminy, Hermes' pre-delivery response judge. Evaluate the candidate assistant response "
+        "against the current-turn transcript/tool evidence. Return ONLY JSON with keys: "
+        "verdict (pass|repair|block|escalate), issues (array of {code,message,quote?}), confidence. "
+        "Use repair/block for unsupported action, completion, validation, current-fact, safety, or source claims. "
+        "Use pass only when the candidate is safe to deliver as-is."
+    )
+    user = (
+        "Current-turn transcript/evidence:\n"
+        "```json\n"
+        f"{transcript}\n"
+        "```\n\n"
+        "Collected tool evidence:\n"
+        "```text\n"
+        f"{evidence}\n"
+        "```\n\n"
+        "Deterministic pre-check findings:\n"
+        "```json\n"
+        f"{json.dumps(deterministic_summary, ensure_ascii=False)}\n"
+        "```\n\n"
+        "Candidate response:\n"
+        "```text\n"
+        f"{response_text}\n"
+        "```"
+    )
+    response = call_llm(
+        task="response_verifier",
+        provider=None if cfg.llm_provider == "auto" else cfg.llm_provider,
+        model=cfg.llm_model or None,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0,
+        max_tokens=1200,
+        timeout=cfg.llm_timeout,
+    )
+    payload = _parse_json_object(_extract_message_text(response))
+    verdict = str(payload.get("verdict", "") or "").strip().lower()
+    if verdict == "pass":
+        return VerificationReceipt(ok=True, action="allow", findings=[])
+
+    issues = payload.get("issues")
+    findings: list[VerificationFinding] = []
+    if isinstance(issues, list):
+        for idx, issue in enumerate(issues, 1):
+            if isinstance(issue, Mapping):
+                findings.append(
+                    VerificationFinding(
+                        code=_sanitize_issue_code(issue.get("code"), f"llm_judge_issue_{idx}"),
+                        severity="error" if verdict in {"block", "escalate"} else "warning",
+                        message=str(issue.get("message") or issue.get("quote") or "LLM judge flagged the response."),
+                    )
+                )
+    if not findings:
+        findings.append(
+            VerificationFinding(
+                code=_sanitize_issue_code(verdict, "llm_judge_blocked"),
+                severity="error" if verdict in {"block", "escalate"} else "warning",
+                message="LLM judge did not pass the candidate response.",
+            )
+        )
+    return _receipt_from_findings(findings, cfg)
+
+
+def verify_response(
+    *,
+    response_text: str,
+    messages: Sequence[Mapping[str, Any]],
+    config: ResponseVerifierConfig | None = None,
+) -> VerificationReceipt:
+    """Return a deterministic accountability verdict for a final response."""
+    cfg = config or ResponseVerifierConfig(enabled=True)
+    deterministic_findings = _deterministic_findings(response_text, messages, cfg)
+    if cfg.backend in {"llm", "hybrid", "jiminy"}:
+        try:
+            return _llm_judge_receipt(
+                response_text=response_text,
+                messages=messages,
+                cfg=cfg,
+                deterministic_findings=deterministic_findings,
+            )
+        except Exception as exc:
+            logger.warning("LLM response verifier failed: %s", exc)
+            if cfg.fail_closed:
+                return VerificationReceipt(
+                    ok=False,
+                    action="block" if cfg.mode in {"block", "strict"} else "warn",
+                    findings=[
+                        VerificationFinding(
+                            code="llm_judge_failed",
+                            severity="error",
+                            message=f"LLM response verifier failed: {exc}",
+                        )
+                    ],
+                )
+
+    return _receipt_from_findings(deterministic_findings, cfg)
 
 
 def _finding_summary(receipt: VerificationReceipt) -> str:
