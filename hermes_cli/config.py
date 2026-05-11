@@ -989,14 +989,18 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
-    # Jiminy-style final-response accountability gate. When enabled, Hermes
-    # checks high-risk completion claims (tests passed, pushed, scheduled, etc.)
-    # against current-turn tool evidence before persisting/delivering the reply.
-    # In block/strict mode it privately retries blocked candidates before
-    # delivery, up to max_repairs.
+    # Jiminy final-response accountability gate. When enabled, Hermes can run
+    # an LLM judge over candidate replies before delivery, with deterministic
+    # tool-evidence checks available as fallback/pre-checks. In block/strict
+    # mode it privately retries blocked candidates before delivery, up to
+    # max_repairs.
     "response_verifier": {
         "enabled": False,
         "mode": "warn",  # warn | block | strict
+        "backend": "llm",  # deterministic | llm | hybrid
+        "llm_provider": "auto",
+        "llm_model": "",
+        "llm_timeout": 30,
         "receipt_dir": "~/.hermes/response-verifier",
         "max_evidence_chars": 50000,
         "max_repairs": 1,
