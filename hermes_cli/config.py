@@ -989,15 +989,15 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
-    # Jiminy final-response accountability gate. When enabled, Hermes can run
-    # an LLM judge over candidate replies before delivery, with deterministic
-    # tool-evidence checks available as fallback/pre-checks. In block/strict
-    # mode it privately retries blocked candidates before delivery, up to
-    # max_repairs.
+    # Jiminy final-response accountability gate. When enabled, Hermes uses an
+    # adaptive verifier: deterministic evidence checks decide whether a reply
+    # contains risky unsupported action/source/completion claims; the LLM judge
+    # is only used for those risky cases by default. In block/strict mode it
+    # privately retries blocked candidates before delivery, up to max_repairs.
     "response_verifier": {
         "enabled": False,
         "mode": "warn",  # warn | block | strict
-        "backend": "llm",  # deterministic | llm | hybrid
+        "backend": "adaptive",  # adaptive | deterministic | llm | hybrid
         "llm_provider": "auto",
         "llm_model": "",
         "llm_timeout": 30,

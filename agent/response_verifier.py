@@ -55,6 +55,22 @@ _ACTION_PROMISE_RE = re.compile(
     re.I,
 )
 
+_SOURCE_CLAIM_RE = re.compile(
+    r"\b(?:i\s+(?:checked|looked up|searched|fetched|read|verified)|"
+    r"according to|the\s+(?:official\s+)?(?:docs?|documentation|source|page|article)\s+(?:says?|state|states|show|shows))\b",
+    re.I,
+)
+
+_SOURCE_EVIDENCE_NEEDLES = (
+    "web_extract",
+    "web_search",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_console",
+    "http://",
+    "https://",
+)
+
 _TOOLISH_ROLES = {"tool", "function"}
 
 
@@ -67,7 +83,7 @@ class ResponseVerifierConfig:
     max_repairs: int = 1
     fail_closed: bool = False
     include_receipt_in_response: bool = False
-    backend: str = "deterministic"  # deterministic | llm | hybrid
+    backend: str = "adaptive"  # adaptive | deterministic | llm | hybrid
     llm_provider: str = "auto"
     llm_model: str = ""
     llm_timeout: float = 30.0
@@ -83,7 +99,7 @@ class ResponseVerifierConfig:
             max_repairs=max(0, int(data.get("max_repairs", 1) or 0)),
             fail_closed=bool(data.get("fail_closed", False)),
             include_receipt_in_response=bool(data.get("include_receipt_in_response", False)),
-            backend=str(data.get("backend", "deterministic") or "deterministic").lower(),
+            backend=str(data.get("backend", "adaptive") or "adaptive").lower(),
             llm_provider=str(data.get("llm_provider", data.get("provider", "auto")) or "auto"),
             llm_model=str(data.get("llm_model", data.get("model", "")) or ""),
             llm_timeout=float(data.get("llm_timeout", data.get("timeout", 30.0)) or 30.0),
@@ -225,6 +241,14 @@ def _deterministic_findings(response_text: str, messages: Sequence[Mapping[str, 
                 message="Response appears to promise action without any tool evidence in the turn.",
             )
         )
+    if _SOURCE_CLAIM_RE.search(response_text) and not any(needle in evidence for needle in _SOURCE_EVIDENCE_NEEDLES):
+        findings.append(
+            VerificationFinding(
+                code="source_claim_without_evidence",
+                severity="warning",
+                message="Response claims source/doc verification without matching current-turn source evidence.",
+            )
+        )
     return findings
 
 
@@ -358,7 +382,16 @@ def verify_response(
     cfg = config or ResponseVerifierConfig(enabled=True)
     evidence_msgs = _evidence_messages(messages, evidence_start_index=evidence_start_index)
     deterministic_findings = _deterministic_findings(response_text, evidence_msgs, cfg)
-    if cfg.backend in {"llm", "hybrid", "jiminy"}:
+    should_run_llm = cfg.backend in {"llm", "hybrid", "jiminy"}
+    if cfg.backend == "adaptive":
+        # Adaptive mode is deliberately narrower than a strict LLM judge over
+        # every sentence. Deterministic checks first decide whether the reply
+        # contains accountability-sensitive unsupported claims. If not, do not
+        # invite another model to over-interpret casual design framing or
+        # already-grounded sourced answers.
+        should_run_llm = bool(deterministic_findings)
+
+    if should_run_llm:
         try:
             return _llm_judge_receipt(
                 response_text=response_text,

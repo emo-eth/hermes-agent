@@ -205,3 +205,97 @@ def test_retry_prompt_carries_evidence_bundle_for_repair_model():
     assert "Current evidence available to repair against" in prompt
     assert "git status --short --branch" in prompt
     assert "ahead 1" in prompt
+
+
+def test_adaptive_backend_passes_grounded_source_claim_without_llm(monkeypatch):
+    def fail_if_called(**kwargs):
+        raise AssertionError("adaptive verifier should not call LLM when source/action evidence is present")
+
+    monkeypatch.setattr("agent.response_verifier.call_llm", fail_if_called)
+
+    receipt = verify_response(
+        response_text=(
+            "I checked the official Anthropic docs. Claude Code legal/compliance says "
+            "Pro and Max limits assume ordinary individual usage."
+        ),
+        messages=[
+            {"role": "user", "content": "check Anthropic terms"},
+            {"role": "assistant", "tool_calls": [{"id": "web1", "function": {"name": "web_extract", "arguments": "{}"}}]},
+            {
+                "role": "tool",
+                "name": "web_extract",
+                "tool_call_id": "web1",
+                "content": "https://code.claude.com/docs/en/legal-and-compliance\nAdvertised usage limits for Pro and Max plans assume ordinary, individual usage of Claude Code and the Agent SDK.",
+            },
+        ],
+        config=ResponseVerifierConfig(enabled=True, mode="block", backend="adaptive"),
+    )
+
+    assert receipt.ok is True
+    assert receipt.action == "allow"
+
+
+def test_adaptive_backend_blocks_source_claim_without_source_evidence():
+    receipt = verify_response(
+        response_text="I checked the official docs. They say this is compliant.",
+        messages=[{"role": "user", "content": "is this compliant?"}],
+        config=ResponseVerifierConfig(enabled=True, mode="block", backend="adaptive"),
+    )
+
+    assert receipt.ok is False
+    assert receipt.action == "block"
+    assert {finding.code for finding in receipt.findings} >= {"source_claim_without_evidence"}
+
+
+def test_adaptive_backend_does_not_treat_unrelated_tool_output_as_source_evidence():
+    receipt = verify_response(
+        response_text="I checked the official docs. They say this is compliant.",
+        messages=[
+            {"role": "user", "content": "is this compliant?"},
+            {"role": "assistant", "tool_calls": [{"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "name": "terminal", "tool_call_id": "tc1", "content": "pwd\n/tmp/project\nexit_code: 0"},
+        ],
+        config=ResponseVerifierConfig(enabled=True, mode="block", backend="adaptive"),
+    )
+
+    assert receipt.ok is False
+    assert receipt.action == "block"
+    assert {finding.code for finding in receipt.findings} >= {"source_claim_without_evidence"}
+
+
+def test_adaptive_backend_passes_casual_design_opinion_without_llm(monkeypatch):
+    def fail_if_called(**kwargs):
+        raise AssertionError("adaptive verifier should not LLM-judge casual design framing")
+
+    monkeypatch.setattr("agent.response_verifier.call_llm", fail_if_called)
+
+    receipt = verify_response(
+        response_text="My preferred design is a small local Claude Code worker with bounded tools. Cleaner and less spooky.",
+        messages=[{"role": "user", "content": "what design should we use?"}],
+        config=ResponseVerifierConfig(enabled=True, mode="block", backend="adaptive"),
+    )
+
+    assert receipt.ok is True
+    assert receipt.action == "allow"
+
+
+def test_adaptive_backend_uses_llm_only_after_deterministic_findings(monkeypatch):
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"verdict":"repair","issues":[{"code":"unsupported_tests","message":"No test evidence"}]}'))]
+        )
+
+    monkeypatch.setattr("agent.response_verifier.call_llm", fake_call_llm)
+
+    receipt = verify_response(
+        response_text="Done. Tests passed.",
+        messages=[{"role": "user", "content": "fix it"}],
+        config=ResponseVerifierConfig(enabled=True, mode="block", backend="adaptive"),
+    )
+
+    assert receipt.ok is False
+    assert receipt.action == "block"
+    assert calls
