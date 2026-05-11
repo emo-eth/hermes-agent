@@ -103,6 +103,8 @@ class VerificationReceipt:
     action: str
     findings: list[VerificationFinding] = field(default_factory=list)
     receipt_path: str | None = None
+    evidence_message_count: int = 0
+    evidence_tool_chars: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +112,8 @@ class VerificationReceipt:
             "action": self.action,
             "findings": [finding.__dict__ for finding in self.findings],
             "receipt_path": self.receipt_path,
+            "evidence_message_count": self.evidence_message_count,
+            "evidence_tool_chars": self.evidence_tool_chars,
         }
 
 
@@ -131,6 +135,47 @@ def _stringify_content(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except Exception:
         return str(value)
+
+
+def _is_internal_jiminy_message(msg: Mapping[str, Any]) -> bool:
+    if msg.get("_jiminy_retry") or msg.get("_jiminy_blocked_candidate"):
+        return True
+    content = msg.get("content")
+    if isinstance(content, str) and content.startswith("[System: Jiminy blocked your previous candidate response"):
+        return True
+    return False
+
+
+def _evidence_messages(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    evidence_start_index: int = 0,
+) -> list[Mapping[str, Any]]:
+    start = max(0, int(evidence_start_index or 0))
+    scoped = list(messages[start:])
+    return [msg for msg in scoped if isinstance(msg, Mapping) and not _is_internal_jiminy_message(msg)]
+
+
+def build_verifier_evidence_bundle(
+    *,
+    messages: Sequence[Mapping[str, Any]],
+    max_chars: int,
+    evidence_start_index: int = 0,
+) -> str:
+    """Build the exact scoped evidence packet used by Jiminy."""
+    evidence_msgs = _evidence_messages(messages, evidence_start_index=evidence_start_index)
+    transcript = _stringify_content(evidence_msgs)[:max_chars]
+    tool_evidence = _collect_evidence(evidence_msgs, max_chars)
+    return (
+        "Current-turn transcript/evidence:\n"
+        "```json\n"
+        f"{transcript}\n"
+        "```\n\n"
+        "Collected tool evidence:\n"
+        "```text\n"
+        f"{tool_evidence}\n"
+        "```"
+    )
 
 
 def _collect_evidence(messages: Sequence[Mapping[str, Any]], max_chars: int) -> str:
@@ -225,9 +270,11 @@ def _llm_judge_receipt(
     messages: Sequence[Mapping[str, Any]],
     cfg: ResponseVerifierConfig,
     deterministic_findings: list[VerificationFinding],
+    evidence_start_index: int = 0,
 ) -> VerificationReceipt:
-    evidence = _collect_evidence(messages, cfg.max_evidence_chars)
-    transcript = _stringify_content(list(messages))[: cfg.max_evidence_chars]
+    evidence_msgs = _evidence_messages(messages, evidence_start_index=evidence_start_index)
+    evidence = _collect_evidence(evidence_msgs, cfg.max_evidence_chars)
+    transcript = _stringify_content(evidence_msgs)[: cfg.max_evidence_chars]
     deterministic_summary = [finding.__dict__ for finding in deterministic_findings]
     system = (
         "You are Jiminy, Hermes' pre-delivery response judge. Evaluate the candidate assistant response "
@@ -266,7 +313,13 @@ def _llm_judge_receipt(
     payload = _parse_json_object(_extract_message_text(response))
     verdict = str(payload.get("verdict", "") or "").strip().lower()
     if verdict == "pass":
-        return VerificationReceipt(ok=True, action="allow", findings=[])
+        return VerificationReceipt(
+            ok=True,
+            action="allow",
+            findings=[],
+            evidence_message_count=len(evidence_msgs),
+            evidence_tool_chars=len(evidence),
+        )
 
     issues = payload.get("issues")
     findings: list[VerificationFinding] = []
@@ -288,7 +341,10 @@ def _llm_judge_receipt(
                 message="LLM judge did not pass the candidate response.",
             )
         )
-    return _receipt_from_findings(findings, cfg)
+    receipt = _receipt_from_findings(findings, cfg)
+    receipt.evidence_message_count = len(evidence_msgs)
+    receipt.evidence_tool_chars = len(evidence)
+    return receipt
 
 
 def verify_response(
@@ -296,10 +352,12 @@ def verify_response(
     response_text: str,
     messages: Sequence[Mapping[str, Any]],
     config: ResponseVerifierConfig | None = None,
+    evidence_start_index: int = 0,
 ) -> VerificationReceipt:
-    """Return a deterministic accountability verdict for a final response."""
+    """Return an accountability verdict for a final response."""
     cfg = config or ResponseVerifierConfig(enabled=True)
-    deterministic_findings = _deterministic_findings(response_text, messages, cfg)
+    evidence_msgs = _evidence_messages(messages, evidence_start_index=evidence_start_index)
+    deterministic_findings = _deterministic_findings(response_text, evidence_msgs, cfg)
     if cfg.backend in {"llm", "hybrid", "jiminy"}:
         try:
             return _llm_judge_receipt(
@@ -307,6 +365,7 @@ def verify_response(
                 messages=messages,
                 cfg=cfg,
                 deterministic_findings=deterministic_findings,
+                evidence_start_index=evidence_start_index,
             )
         except Exception as exc:
             logger.warning("LLM response verifier failed: %s", exc)
@@ -323,7 +382,11 @@ def verify_response(
                     ],
                 )
 
-    return _receipt_from_findings(deterministic_findings, cfg)
+    receipt = _receipt_from_findings(deterministic_findings, cfg)
+    evidence = _collect_evidence(evidence_msgs, cfg.max_evidence_chars)
+    receipt.evidence_message_count = len(evidence_msgs)
+    receipt.evidence_tool_chars = len(evidence)
+    return receipt
 
 
 def _finding_summary(receipt: VerificationReceipt) -> str:
@@ -336,6 +399,7 @@ def build_verifier_retry_prompt(
     receipt: VerificationReceipt,
     attempt: int,
     max_repairs: int,
+    evidence_bundle: str | None = None,
 ) -> str:
     """Build the private retry instruction inserted after a blocked candidate."""
     summary = _finding_summary(receipt)
@@ -347,10 +411,24 @@ def build_verifier_retry_prompt(
         "```text\n"
         f"{candidate_response}\n"
         "```\n\n"
-        "Revise the final answer now. Do not repeat unsupported completion, "
+        + (
+            "Current evidence available to repair against:\n"
+            f"{evidence_bundle}\n\n"
+            if evidence_bundle else ""
+        )
+        + "Revise the final answer now. Do not repeat unsupported completion, "
         "action, current-fact, or validation claims unless the current-turn tool evidence above proves them. "
         "If evidence is missing, say exactly what is unverified or continue by calling the needed tools. "
         "Return only the corrected user-facing answer or the required tool calls.]"
+    )
+
+
+def render_blocked_response(receipt: VerificationReceipt) -> str:
+    summary = _finding_summary(receipt)
+    return (
+        "Jiminy blocked this response after exhausting repair attempts. "
+        "I’m not going to send the unsupported answer as if it were true. "
+        f"Issues: {summary}"
     )
 
 
@@ -362,12 +440,18 @@ def evaluate_response_verifier(
     model: str = "",
     platform: str = "",
     config: ResponseVerifierConfig | None = None,
+    evidence_start_index: int = 0,
 ) -> tuple[ResponseVerifierConfig, VerificationReceipt | None]:
     """Run the configured verifier and write a receipt without changing text."""
     cfg = config or load_response_verifier_config()
     if not cfg.enabled or not response_text:
         return cfg, None
-    receipt = verify_response(response_text=response_text, messages=messages, config=cfg)
+    receipt = verify_response(
+        response_text=response_text,
+        messages=messages,
+        config=cfg,
+        evidence_start_index=evidence_start_index,
+    )
     receipt = _write_receipt(receipt, cfg=cfg, session_id=session_id, model=model, platform=platform)
     return cfg, receipt
 
@@ -418,6 +502,7 @@ def apply_response_verifier(
     model: str = "",
     platform: str = "",
     config: ResponseVerifierConfig | None = None,
+    evidence_start_index: int = 0,
 ) -> tuple[str, VerificationReceipt | None]:
     """Apply the configured verifier and return possibly modified response text."""
     cfg = config or load_response_verifier_config()
@@ -431,6 +516,7 @@ def apply_response_verifier(
         model=model,
         platform=platform,
         config=cfg,
+        evidence_start_index=evidence_start_index,
     )
     if receipt is None:
         return response_text, None
@@ -445,10 +531,7 @@ def apply_response_verifier(
     suffix += "]"
 
     if receipt.action == "block":
-        response_text = (
-            "Jiminy blocked this response because it made accountability-sensitive claims "
-            f"without enough current-turn evidence. {summary}"
-        )
+        response_text = render_blocked_response(receipt)
         if cfg.include_receipt_in_response and receipt.receipt_path:
             response_text += f"\nReceipt: {receipt.receipt_path}"
     else:
