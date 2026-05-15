@@ -31,6 +31,8 @@ from typing import List, Dict, Any, Set, Optional
 _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
+    # Local wiki / knowledge base retrieval
+    "wiki_search", "wiki_read",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -81,6 +83,12 @@ TOOLSETS = {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
         "includes": []  # No other toolsets included
+    },
+
+    "wiki": {
+        "description": "Local wiki/knowledge-base retrieval with path-cited search and page reads",
+        "tools": ["wiki_search", "wiki_read"],
+        "includes": []
     },
     
     "search": {
