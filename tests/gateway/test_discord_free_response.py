@@ -338,6 +338,27 @@ async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_free_response_channel_still_auto_threads(adapter, monkeypatch):
+    """Free-response inbox channels should still auto-thread when auto_thread is enabled."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="link drop")
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+    assert event.source.thread_id == "999"
+
+
+@pytest.mark.asyncio
 async def test_discord_auto_thread_can_be_disabled(adapter, monkeypatch):
     """Setting auto_thread to false skips thread creation."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
@@ -445,6 +466,30 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
     assert event.text == "follow-up from voice text chat"
     assert event.source.chat_type == "group"
 
+
+
+@pytest.mark.asyncio
+async def test_discord_no_thread_channel_skips_auto_thread(adapter, monkeypatch):
+    """Channels listed in DISCORD_NO_THREAD_CHANNELS reply inline even when auto_thread is enabled."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="casual chat in no-thread channel",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "casual chat in no-thread channel"
+    assert event.source.chat_type == "group"
 
 
 
