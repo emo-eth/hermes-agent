@@ -135,6 +135,14 @@ class WebhookAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def _create_app(self) -> Any:
+        """Create the aiohttp app with the configured body-size ceiling."""
+        assert web is not None
+        app = web.Application(client_max_size=self._max_body_bytes)
+        app.router.add_get("/health", self._handle_health)
+        app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+        return app
+
     async def connect(self) -> bool:
         # Load agent-created subscriptions before validating
         self._reload_dynamic_routes()
@@ -173,9 +181,7 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
 
-        app = web.Application()
-        app.router.add_get("/health", self._handle_health)
-        app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+        app = self._create_app()
 
         # Port conflict detection — fail fast if port is already in use
         import socket as _socket

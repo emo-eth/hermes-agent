@@ -501,6 +501,22 @@ class TestRateLimiting:
 class TestBodySize:
 
     @pytest.mark.asyncio
+    async def test_configured_large_payload_reaches_handler(self):
+        """Bodies above aiohttp's 1 MiB default are accepted up to max_body_bytes."""
+        routes = {"voice": {"secret": _INSECURE_NO_AUTH, "prompt": "voice"}}
+        adapter = _make_adapter(routes=routes, max_body_bytes=2 * 1024 * 1024)
+        adapter.handle_message = AsyncMock()
+
+        app = adapter._create_app()
+        async with TestClient(TestServer(app)) as cli:
+            payload = {"audio_b64": "a" * (1_100_000)}
+            resp = await cli.post("/webhooks/voice", json=payload)
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_oversized_payload_rejected(self):
         """Content-Length > max_body_bytes returns 413."""
         routes = {"big": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
