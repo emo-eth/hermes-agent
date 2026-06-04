@@ -21,6 +21,16 @@ on:
       - 'scripts/normalize_legacy_paths.py'
       - 'scripts/rebuild_legacy_session_db.py'
       - '.github/workflows/restore-drill.yml'
+  pull_request:
+    paths:
+      - 'scripts/restore-hermes.sh'
+      - 'scripts/bootstrap-hermes-restore.sh'
+      - 'scripts/test-hermes-restore-container.sh'
+      - 'scripts/audit_hermes_backup.py'
+      - 'scripts/export_state_sessions_to_legacy.py'
+      - 'scripts/normalize_legacy_paths.py'
+      - 'scripts/rebuild_legacy_session_db.py'
+      - '.github/workflows/restore-drill.yml'
 
 permissions:
   contents: read
@@ -51,12 +61,19 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/hermes-agent/scripts/bootstrap-hermes-restore.sh" --check-only
 
-      - name: Require private restore token
+      - name: Check private restore token
+        id: restore-token
         env:
           HERMES_RESTORE_TOKEN: ${{ secrets.HERMES_RESTORE_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ -z "$HERMES_RESTORE_TOKEN" ]; then
-            cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$HERMES_RESTORE_TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_token=false" >> "$GITHUB_OUTPUT"
+          cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           ## Missing HERMES_RESTORE_TOKEN
 
           Add a fine-grained GitHub token secret named `HERMES_RESTORE_TOKEN`
@@ -66,11 +83,22 @@ jobs:
           - `emo-eth/hermes-workspace-backup`
           - `emo-eth/hermes-beads`
           EOF
-            echo "::error title=Missing restore token::Set the HERMES_RESTORE_TOKEN repository secret."
-            exit 1
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+
+          This pull request ran the public restore bootstrap preflight only.
+          Full clean-container restore is skipped on PRs without the private
+          backup/beads token.
+          EOF
+            exit 0
           fi
 
+          echo "::error title=Missing restore token::Set the HERMES_RESTORE_TOKEN repository secret."
+          exit 1
+
       - name: Checkout workspace backup
+        if: steps.restore-token.outputs.has_token == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           repository: ${{ env.BACKUP_REPO }}
@@ -78,6 +106,7 @@ jobs:
           path: hermes-workspace-backup
 
       - name: Checkout beads backup
+        if: steps.restore-token.outputs.has_token == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           repository: ${{ env.BEADS_REPO }}
@@ -85,6 +114,7 @@ jobs:
           path: hermes-beads
 
       - name: Run clean-container restore drill
+        if: steps.restore-token.outputs.has_token == 'true'
         run: |
           bash "$GITHUB_WORKSPACE/hermes-agent/scripts/test-hermes-restore-container.sh" \
             --agent-dir "$GITHUB_WORKSPACE/hermes-agent" \

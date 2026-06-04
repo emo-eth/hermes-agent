@@ -252,8 +252,9 @@ read-only, copies the runtime into the container, restores into `/tmp/hermes-hom
 skips the LLM smoke test, and fails if sessions/messages are not restored.
 
 The CI harness now exists as `.github/workflows/restore-drill.yml`. It runs
-weekly, on manual dispatch, and when restore scripts change on `main`. It
-checks out:
+weekly, on manual dispatch, when restore scripts change on `main`, and as a
+PR preflight when restore scripts or the workflow change. Full restore runs
+check out:
 
 - `emo-eth/hermes-agent`
 - `emo-eth/hermes-workspace-backup`
@@ -264,7 +265,10 @@ uploads `hermes-restore-report.json` as a workflow artifact. Before the private
 backup token gate, it also runs
 `scripts/bootstrap-hermes-restore.sh --check-only` with `GH_TOKEN` from the
 workflow token so bootstrap regressions are caught even when the private restore
-secret is missing. To enable the full restore drill, add a repository secret:
+secret is missing. Pull requests without the private token stop after that
+public bootstrap preflight and record that the full clean-container drill was
+skipped; scheduled/manual/main runs still fail loudly without the token. To
+enable the full restore drill, add a repository secret:
 
 ```text
 HERMES_RESTORE_TOKEN=<fine-grained GitHub token with read access to all three repos>
