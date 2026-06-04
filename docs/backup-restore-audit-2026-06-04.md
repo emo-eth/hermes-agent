@@ -5,7 +5,7 @@
 - Runtime fork cloned to `/Users/jameswenzel/dev/hermes-agent` from `emo-eth/hermes-agent`.
 - Workspace backup cloned to `/Users/jameswenzel/dev/hermes-workspace-backup`;
   it was initially at `3aad33520`, then synced from live restored state and
-  pushed through latest backup commit `aa705ea61`.
+  pushed through latest backup commit `84adf3c7f`.
 - Beads tracker cloned to `/Users/jameswenzel/dev/hermes-beads`.
 - Hermes installed via `./setup-hermes.sh`, which uses `uv` and Python 3.11.
 - `~/.hermes` restored from `hermes-workspace-backup`; the pre-restore fresh home is preserved at `~/.hermes.pre-restore-20260604T180507Z`.
@@ -15,6 +15,10 @@
   `scripts/export_state_sessions_to_legacy.py`; the live backup hook now runs
   this export before rsync/commit so the raw backup remains reconstructable
   without tracking `state.db`.
+- After a successful backup push, the live backup hook now attempts a
+  non-blocking `gh workflow run restore-drill.yml --repo emo-eth/hermes-agent`
+  so fresh backups can immediately exercise the clean-container restore drill
+  once the restore workflow is landed and `HERMES_RESTORE_TOKEN` is configured.
 - Active restored path references are normalized with `scripts/normalize_legacy_paths.py`;
   historical session transcripts, logs, cron output, webhook captures, and
   snapshots are preserved as receipts.
@@ -38,7 +42,9 @@
   `aa705ea61`. The follow-up strict audit passed with 905 live/backup JSONL
   transcripts, 702 `sessions.json` entries, 905 live SQLite sessions, 49,414
   live SQLite messages, no live DB sessions missing legacy files, no message
-  drift, and no tracked/untracked backup `state.db`.
+  drift, and no tracked/untracked backup `state.db`. Backup commit `84adf3c7f`
+  then added the post-push restore-drill trigger hook; a follow-up strict audit
+  still passed with the same session/message parity.
 - A clean restore from the original backup reconstructed 840 sessions and
   47,661 messages in SQLite. After exporting SQLite-only/stale live sessions
   and syncing backup commit `4020dd1f3`, a throwaway full host restore from the
@@ -145,7 +151,8 @@
    an interactive one-button restore.
 
 9. Backup validation is not yet proven in CI.
-   The workflow now exists, but it has not run successfully in GitHub Actions
+   The workflow now exists and backup pushes now attempt to dispatch it after a
+   successful mirror push, but it has not run successfully in GitHub Actions
    with the private restore token. The current drill also skips the LLM smoke
    test and does not start a real gateway platform session.
 
@@ -179,7 +186,7 @@
     `/Users/jameswenzel/dev/hermes-workspace-backup` and
     `/Users/jameswenzel/Library/Application Support/hermes-workspace-backup`,
     the hook was fixed to exclude `state.db*`, and backup commits through
-    `aa705ea61` were pushed. `scripts/audit_hermes_backup.py` now proves file
+    `84adf3c7f` were pushed. `scripts/audit_hermes_backup.py` now proves file
     freshness plus message-count parity between live SQLite, live JSONL, and
     backup JSONL.
 
@@ -214,9 +221,16 @@ a repository secret:
 HERMES_RESTORE_TOKEN=<fine-grained GitHub token with read access to all three repos>
 ```
 
-Backup-repo pushes will not automatically trigger this workflow unless a
-matching workflow or repository-dispatch hook is added to `hermes-workspace-backup`.
-The weekly schedule still catches stale backups after the fact.
+Backup-repo pushes now attempt to trigger this workflow from
+`hooks/backup_push.sh` after a successful push:
+
+```bash
+gh workflow run restore-drill.yml --repo emo-eth/hermes-agent --ref main
+```
+
+The trigger is non-blocking so a missing workflow, missing GitHub auth, or
+missing `HERMES_RESTORE_TOKEN` does not make the backup push fail. The weekly
+schedule still catches stale backups after the fact.
 
 Freshness audit:
 
@@ -285,8 +299,8 @@ Latest local container result:
 
 Latest strict backup audit after final backup sync:
 
-- backup commit: `aa705ea61`
-- strict audit report: `/tmp/hermes-backup-audit-current-after-sync.json`
+- backup commit: `84adf3c7f`
+- strict audit report: `/tmp/hermes-backup-audit-after-trigger-hook.json`
 - latest container restore report: `/tmp/hermes-restore-report-latest-container.json`
 - `doctor_status`: 0
 - `status_status`: 0
