@@ -112,12 +112,13 @@
   normalizes restored backup-hook agent checkout paths to the chosen
   `--agent-dir`/`--repos-dir` checkout.
 - `scripts/test-hermes-restore-container.sh` passed again in a clean `debian:13.4`
-  container against backup commit `f617db8e9`. It restored into
+  container against backup commit `e60f7749d`. It restored into
   `/tmp/hermes-home`, rebuilt 915 sessions and 50,440 messages, ran `hermes doctor`, `hermes status`, `hermes sessions
   stats`, `hermes cron list`, and `hermes gateway status` with status 0, and
   validated the machine-readable restore report. Latest report:
-  `/tmp/hermes-restore-report-f617db8e9.json`, timestamp
-  `20260604T231222Z`. The restore report correctly shows
+  `/tmp/hermes-restore-report-with-commits.json`, timestamp
+  `20260604T232353Z`, with exact agent, backup, and beads commit SHAs embedded.
+  The restore report correctly shows
   `backup_scheduler_status: skipped` because this was a temp/container restore
   to `/tmp/hermes-home`, not a real macOS restore to `$HOME/.hermes`.
 
@@ -239,7 +240,7 @@
     Strict audits of scheduled backup commits prove raw-backup parity for 915
     sessions and 50,440 live SQLite messages at audit time. The latest clean container
     restore proves 915 sessions and 50,440 messages from the raw backup snapshot
-    at commit `f617db8e9` that it mounted. Remaining unproven surfaces are CI execution with private repo
+    at commit `e60f7749d` that it mounted. Remaining unproven surfaces are CI execution with private repo
     token, live Discord gateway startup with user-provided credentials, and a
     full OAuth/provider credential bootstrap on a brand-new machine.
 
@@ -315,8 +316,11 @@ scripts/test-hermes-restore-container.sh \
 Latest local container result:
 
 - container image: `debian:13.4`
-- report timestamp: `20260604T231222Z`
-- report: `/tmp/hermes-restore-report-f617db8e9.json`
+- report timestamp: `20260604T232353Z`
+- report: `/tmp/hermes-restore-report-with-commits.json`
+- agent commit: `0e59a2d6ea0fa822ba1ba82461e4dc3d2951fdab`
+- backup commit: `e60f7749dc42a7b944967e02f0154f67e1395ed3`
+- beads commit: `86d4cdc140ca76922000c9afe025aaf06a16aa86`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
@@ -344,15 +348,16 @@ Latest local container result:
 - gateway: status command works, but the service is not started by this drill
 - backup scheduler: skipped, because the drill restores to `/tmp/hermes-home`
   rather than a real macOS `$HOME/.hermes`
-- host report export: `/tmp/hermes-restore-report-f617db8e9.json` was
+- host report export: `/tmp/hermes-restore-report-with-commits.json` was
   written and parsed successfully
 
 Strict backup audit after scheduler sync:
 
-- audited backup commits: `1eb939f7c`, `0767d1bc6`
+- audited backup commits: `1eb939f7c`, `0767d1bc6`, `e60f7749d`
 - strict audit reports: `/tmp/hermes-backup-audit-1eb939f7c.json`,
-  `/tmp/hermes-backup-audit-0767d1bc6.json`
-- latest container restore report: `/tmp/hermes-restore-report-f617db8e9.json`
+  `/tmp/hermes-backup-audit-0767d1bc6.json`,
+  `/tmp/hermes-backup-audit-e60f7749.json`
+- latest container restore report: `/tmp/hermes-restore-report-with-commits.json`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
@@ -465,7 +470,10 @@ The full procedure should become:
    - `hermes gateway status` must report installed/runnable state, or foreground `timeout 20 hermes gateway run` must reach platform initialization without config errors
 
 6. Emit a machine-readable report:
-   `restore-report.json` with pass/fail, session counts, status/doctor/cron/gateway command statuses, missing env keys, required cron misses, auth-file presence, Hermes-home/backup/agent/Obsidian path-rewrite counts, and fork commit.
+   `restore-report.json` with pass/fail, exact agent/backup/beads commit SHAs,
+   session counts, status/doctor/cron/gateway command statuses, missing env
+   keys, required cron misses, auth-file presence, and
+   Hermes-home/backup/agent/Obsidian path-rewrite counts.
 
 ## Target One-Button Flow
 

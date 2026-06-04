@@ -123,6 +123,18 @@ clone_or_pull() {
   fi
 }
 
+git_head() {
+  local dir="$1"
+  local override="${2:-}"
+  if [ -n "$override" ]; then
+    printf '%s\n' "$override"
+    return
+  fi
+  if [ -d "$dir/.git" ] || [ -f "$dir/.git" ]; then
+    git -C "$dir" rev-parse HEAD 2>/dev/null || true
+  fi
+}
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -418,6 +430,10 @@ clone_or_pull "$AGENT_REPO" "$agent_dir" "$agent_update"
 clone_or_pull "$BACKUP_REPO" "$backup_dir" "$backup_update"
 clone_or_pull "$BEADS_REPO" "$beads_dir" "$beads_update"
 
+agent_commit="$(git_head "$agent_dir" "${HERMES_AGENT_COMMIT:-}")"
+backup_commit="$(git_head "$backup_dir" "${HERMES_BACKUP_COMMIT:-}")"
+beads_commit="$(git_head "$beads_dir" "${HERMES_BEADS_COMMIT:-}")"
+
 cd "$agent_dir"
 printf 'n\n' | ./setup-hermes.sh
 
@@ -682,6 +698,9 @@ cat >"$report" <<EOF
   "agent_repo": "$(json_escape "$AGENT_REPO")",
   "backup_repo": "$(json_escape "$BACKUP_REPO")",
   "beads_repo": "$(json_escape "$BEADS_REPO")",
+  "agent_commit": "$(json_escape "$agent_commit")",
+  "backup_commit": "$(json_escape "$backup_commit")",
+  "beads_commit": "$(json_escape "$beads_commit")",
   "agent_dir": "$(json_escape "$agent_dir")",
   "backup_dir": "$(json_escape "$backup_dir")",
   "beads_dir": "$(json_escape "$beads_dir")",

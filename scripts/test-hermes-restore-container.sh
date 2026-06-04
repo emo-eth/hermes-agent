@@ -58,6 +58,16 @@ for dir in "$AGENT_DIR" "$BACKUP_DIR" "$BEADS_DIR"; do
   fi
 done
 
+git_head() {
+  if [ -d "$1/.git" ] || [ -f "$1/.git" ]; then
+    git -C "$1" rev-parse HEAD 2>/dev/null || true
+  fi
+}
+
+agent_commit="$(git_head "$AGENT_DIR")"
+backup_commit="$(git_head "$BACKUP_DIR")"
+beads_commit="$(git_head "$BEADS_DIR")"
+
 container_name="hermes-restore-test-$(date -u +%Y%m%d%H%M%S)"
 rm_arg="--rm"
 if [ "$KEEP" = "1" ]; then
@@ -76,6 +86,9 @@ fi
 
 docker run $rm_arg --name "$container_name" \
   -e HERMES_SKIP_SMOKE=1 \
+  -e HERMES_AGENT_COMMIT="$agent_commit" \
+  -e HERMES_BACKUP_COMMIT="$backup_commit" \
+  -e HERMES_BEADS_COMMIT="$beads_commit" \
   -v "$AGENT_DIR:/work/hermes-agent-src:ro" \
   -v "$BACKUP_DIR:/work/hermes-workspace-backup:ro" \
   -v "$BEADS_DIR:/work/hermes-beads:ro" \
@@ -173,6 +186,9 @@ if report.get("smoke_output") != "skipped":
     errors.append(f"smoke_output={report.get('smoke_output')!r}")
 if report.get("backup_state_db_size_bytes"):
     errors.append(f"backup_state_db_size_bytes={report.get('backup_state_db_size_bytes')!r}")
+for key in ("agent_commit", "backup_commit", "beads_commit"):
+    if not report.get(key):
+        errors.append(f"{key}=missing")
 if errors:
     raise SystemExit("restore test failed: " + "; ".join(errors))
 print(json.dumps(report, indent=2))
