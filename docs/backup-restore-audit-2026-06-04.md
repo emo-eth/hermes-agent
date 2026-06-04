@@ -30,7 +30,8 @@
 - A later live check on this recovery host showed Hermes installed at
   `/Users/jameswenzel/.local/bin/hermes`, running via launchd from
   `/Users/jameswenzel/dev/hermes-agent`, Discord connected as `bmo#1464`,
-  37 active scheduled jobs, and sessions visible via `hermes sessions list`.
+  37 active scheduled jobs, and 702 active sessions visible via
+  `hermes status`.
 - A later strict backup audit after live gateway/test activity showed the
   backup had drifted by one JSONL transcript plus 39 SQLite-only session rows.
   Running the restored backup hook exported 40 sessions and pushed backup commit
