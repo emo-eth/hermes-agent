@@ -5,7 +5,7 @@
 - Runtime fork cloned to `/Users/jameswenzel/dev/hermes-agent` from `emo-eth/hermes-agent`.
 - Workspace backup cloned to `/Users/jameswenzel/dev/hermes-workspace-backup`;
   it was initially at `3aad33520`, then synced from live restored state and
-  pushed through latest verified backup commit `a34d1d6b1`.
+  pushed through latest strict-audited backup commit `1eb939f7c`.
 - Beads tracker cloned to `/Users/jameswenzel/dev/hermes-beads`.
 - Hermes installed via `./setup-hermes.sh`, which uses `uv` and Python 3.11.
 - `~/.hermes` restored from `hermes-workspace-backup`; the pre-restore fresh home is preserved at `~/.hermes.pre-restore-20260604T180507Z`.
@@ -76,8 +76,8 @@
   with `StartInterval` 300. Its first run exposed a transient rsync race on
   `.skills_prompt_snapshot.json`; the hook now excludes that volatile file.
   Follow-up scheduled/manual hook runs pushed backup commits `c324936a7`,
-  `341d3eeea`, and `a34d1d6b1`. The current strict audit report
-  `/tmp/hermes-backup-audit-after-scheduler-current.json` passes with 915
+  `341d3eeea`, `a34d1d6b1`, `34029bdc5`, `f617db8e9`, and `1eb939f7c`. The current strict audit report
+  `/tmp/hermes-backup-audit-1eb939f7c.json` passes with 915
   live/backup JSONL transcripts, 712 `sessions.json` entries, 915 live SQLite
   sessions, 50,440 live SQLite messages, no missing legacy session coverage, no
   JSONL message drift, and no tracked/untracked backup `state.db`.
@@ -111,12 +111,12 @@
   normalizes restored backup-hook agent checkout paths to the chosen
   `--agent-dir`/`--repos-dir` checkout.
 - `scripts/test-hermes-restore-container.sh` passed again in a clean `debian:13.4`
-  container. It restored into `/tmp/hermes-home`, rebuilt 915 sessions and
-  50,316 messages, ran `hermes doctor`, `hermes status`, `hermes sessions
+  container against backup commit `f617db8e9`. It restored into
+  `/tmp/hermes-home`, rebuilt 915 sessions and 50,440 messages, ran `hermes doctor`, `hermes status`, `hermes sessions
   stats`, `hermes cron list`, and `hermes gateway status` with status 0, and
   validated the machine-readable restore report. Latest report:
-  `/tmp/hermes-restore-report-after-scheduler.json`, timestamp
-  `20260604T221521Z`. The restore report correctly shows
+  `/tmp/hermes-restore-report-f617db8e9.json`, timestamp
+  `20260604T231222Z`. The restore report correctly shows
   `backup_scheduler_status: skipped` because this was a temp/container restore
   to `/tmp/hermes-home`, not a real macOS restore to `$HOME/.hermes`.
 
@@ -229,16 +229,16 @@
     LaunchAgent every 300 seconds. The hook also rate-limits restore-drill
     dispatch attempts and excludes volatile `.skills_prompt_snapshot.json` so a
     disappearing source file cannot abort the mirror. Backup commits through
-    `a34d1d6b1` are pushed, and `scripts/audit_hermes_backup.py` now proves
+    `1eb939f7c` are pushed, and `scripts/audit_hermes_backup.py` now proves
     file freshness plus message-count parity between live SQLite, live JSONL,
     and backup JSONL.
 
 12. Raw-backup parity is now proven for sessions/messages, but not every runtime
     surface is one-click proven.
-    The latest strict audit proves raw-backup parity for 915 sessions and
-    50,440 live SQLite messages at audit time. The latest clean container
-    restore proves 915 sessions and 50,316 messages from the raw backup snapshot
-    it mounted. Remaining unproven surfaces are CI execution with private repo
+    The latest strict audit at backup commit `1eb939f7c` proves raw-backup
+    parity for 915 sessions and 50,440 live SQLite messages at audit time. The latest clean container
+    restore proves 915 sessions and 50,440 messages from the raw backup snapshot
+    at commit `f617db8e9` that it mounted. Remaining unproven surfaces are CI execution with private repo
     token, live Discord gateway startup with user-provided credentials, and a
     full OAuth/provider credential bootstrap on a brand-new machine.
 
@@ -314,15 +314,15 @@ scripts/test-hermes-restore-container.sh \
 Latest local container result:
 
 - container image: `debian:13.4`
-- report timestamp: `20260604T221521Z`
-- report: `/tmp/hermes-restore-report-after-scheduler.json`
+- report timestamp: `20260604T231222Z`
+- report: `/tmp/hermes-restore-report-f617db8e9.json`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
 - `cron_status`: 0
 - `gateway_check_status`: 0
 - `session_count`: 915
-- `message_count`: 50,316
+- `message_count`: 50,440
 - cron jobs: 37 active, 38 total
 - required cron jobs missing: none
 - required restore env vars: `DISCORD_BOT_TOKEN,DISCORD_ALLOWED_USERS`
@@ -343,14 +343,14 @@ Latest local container result:
 - gateway: status command works, but the service is not started by this drill
 - backup scheduler: skipped, because the drill restores to `/tmp/hermes-home`
   rather than a real macOS `$HOME/.hermes`
-- host report export: `/tmp/hermes-restore-report-after-scheduler.json` was
+- host report export: `/tmp/hermes-restore-report-f617db8e9.json` was
   written and parsed successfully
 
 Latest strict backup audit after scheduler sync:
 
-- backup commit: `a34d1d6b1`
-- strict audit report: `/tmp/hermes-backup-audit-after-scheduler-current.json`
-- latest container restore report: `/tmp/hermes-restore-report-after-scheduler.json`
+- backup commit: `1eb939f7c`
+- strict audit report: `/tmp/hermes-backup-audit-1eb939f7c.json`
+- latest container restore report: `/tmp/hermes-restore-report-f617db8e9.json`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
@@ -358,8 +358,8 @@ Latest strict backup audit after scheduler sync:
 - `gateway_check_status`: 0
 - `smoke_status`: 0, skipped intentionally for no-LLM restore verification
 - `session_count`: 915
-- `message_count`: 50,316 in the latest container restore; 50,440 live SQLite
-  messages in the latest strict audit after the scheduler's next backup commit
+- `message_count`: 50,440 in both the latest container restore and latest
+  strict audit
 - real restored `session_meta` DB messages: 13
 - cron jobs: 37 active, 38 total
 - required cron jobs missing: none
