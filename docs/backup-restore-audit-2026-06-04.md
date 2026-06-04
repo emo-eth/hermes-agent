@@ -258,8 +258,11 @@ checks out:
 - `emo-eth/hermes-beads`
 
 Then it runs `scripts/test-hermes-restore-container.sh` with `--report` and
-uploads `hermes-restore-report.json` as a workflow artifact. To enable it, add
-a repository secret:
+uploads `hermes-restore-report.json` as a workflow artifact. Before the private
+backup token gate, it also runs
+`scripts/bootstrap-hermes-restore.sh --check-only` with `GH_TOKEN` from the
+workflow token so bootstrap regressions are caught even when the private restore
+secret is missing. To enable the full restore drill, add a repository secret:
 
 ```text
 HERMES_RESTORE_TOKEN=<fine-grained GitHub token with read access to all three repos>

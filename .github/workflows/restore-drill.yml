@@ -39,6 +39,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      - name: Checkout Hermes runtime
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          path: hermes-agent
+
+      - name: Check restore bootstrap entrypoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HERMES_BOOTSTRAP_NO_INSTALL: "1"
+        run: |
+          bash "$GITHUB_WORKSPACE/hermes-agent/scripts/bootstrap-hermes-restore.sh" --check-only
+
       - name: Require private restore token
         env:
           HERMES_RESTORE_TOKEN: ${{ secrets.HERMES_RESTORE_TOKEN }}
@@ -57,11 +69,6 @@ jobs:
             echo "::error title=Missing restore token::Set the HERMES_RESTORE_TOKEN repository secret."
             exit 1
           fi
-
-      - name: Checkout Hermes runtime
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-        with:
-          path: hermes-agent
 
       - name: Checkout workspace backup
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
