@@ -20,6 +20,7 @@ on:
       - 'scripts/export_state_sessions_to_legacy.py'
       - 'scripts/normalize_legacy_paths.py'
       - 'scripts/rebuild_legacy_session_db.py'
+      - 'tests/test_restore_hermes_script.py'
       - '.github/workflows/restore-drill.yml'
   pull_request:
     paths:
@@ -30,6 +31,7 @@ on:
       - 'scripts/export_state_sessions_to_legacy.py'
       - 'scripts/normalize_legacy_paths.py'
       - 'scripts/rebuild_legacy_session_db.py'
+      - 'tests/test_restore_hermes_script.py'
       - '.github/workflows/restore-drill.yml'
 
 permissions:
@@ -63,6 +65,12 @@ jobs:
           HERMES_BOOTSTRAP_NO_INSTALL: "1"
         run: |
           bash "$GITHUB_WORKSPACE/hermes-agent/scripts/bootstrap-hermes-restore.sh" --check-only
+
+      - name: Run restore script unit checks
+        working-directory: hermes-agent
+        run: |
+          bash -n scripts/restore-hermes.sh
+          uv run --frozen --python 3.11 --extra dev pytest tests/test_restore_hermes_script.py -q
 
       - name: Check private restore token
         id: restore-token
