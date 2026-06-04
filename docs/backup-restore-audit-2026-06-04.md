@@ -464,17 +464,39 @@ The full procedure should become:
 
 ## Target One-Button Flow
 
-The first-pass recovery command now exists as `scripts/restore-hermes.sh`.
-From a machine with `gh`, `git`, `rsync`, and `uv` already available:
+The paste-on-a-fresh-machine entrypoint now exists as
+`scripts/bootstrap-hermes-restore.sh`. It checks or installs `git`, `rsync`,
+`curl`, `gh`, and `uv`, verifies `gh auth status`, then delegates to
+`scripts/restore-hermes.sh`.
+
+From a checked-out runtime repo:
+
+```bash
+scripts/bootstrap-hermes-restore.sh
+```
+
+To verify the host is ready without starting a restore:
+
+```bash
+scripts/bootstrap-hermes-restore.sh --check-only
+```
+
+Default restore options are:
 
 ```bash
 scripts/restore-hermes.sh --start-gateway --prompt-missing-env
 ```
 
-Once the script is landed on GitHub, the desired remote form is:
+Once the script is landed on GitHub, the desired remote bootstrap form is:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/emo-eth/hermes-agent/main/scripts/restore-hermes.sh | bash -s -- --start-gateway --prompt-missing-env
+curl -fsSL https://raw.githubusercontent.com/emo-eth/hermes-agent/main/scripts/bootstrap-hermes-restore.sh | bash
+```
+
+To pass non-default restore options through the bootstrap:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/emo-eth/hermes-agent/main/scripts/bootstrap-hermes-restore.sh | bash -s -- --skip-smoke --prompt-missing-env
 ```
 
 The script should prompt for or accept:
