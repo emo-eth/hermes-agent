@@ -5,7 +5,7 @@
 - Runtime fork cloned to `/Users/jameswenzel/dev/hermes-agent` from `emo-eth/hermes-agent`.
 - Workspace backup cloned to `/Users/jameswenzel/dev/hermes-workspace-backup`;
   it was initially at `3aad33520`, then synced from live restored state and
-  pushed through latest backup commit `4020dd1f3`.
+  pushed through latest backup commit `aa705ea61`.
 - Beads tracker cloned to `/Users/jameswenzel/dev/hermes-beads`.
 - Hermes installed via `./setup-hermes.sh`, which uses `uv` and Python 3.11.
 - `~/.hermes` restored from `hermes-workspace-backup`; the pre-restore fresh home is preserved at `~/.hermes.pre-restore-20260604T180507Z`.
@@ -31,6 +31,13 @@
   `/Users/jameswenzel/.local/bin/hermes`, running via launchd from
   `/Users/jameswenzel/dev/hermes-agent`, Discord connected as `bmo#1464`,
   37 active scheduled jobs, and sessions visible via `hermes sessions list`.
+- A later strict backup audit after live gateway/test activity showed the
+  backup had drifted by one JSONL transcript plus 39 SQLite-only session rows.
+  Running the restored backup hook exported 40 sessions and pushed backup commit
+  `aa705ea61`. The follow-up strict audit passed with 905 live/backup JSONL
+  transcripts, 702 `sessions.json` entries, 905 live SQLite sessions, 49,414
+  live SQLite messages, no live DB sessions missing legacy files, no message
+  drift, and no tracked/untracked backup `state.db`.
 - A clean restore from the original backup reconstructed 840 sessions and
   47,661 messages in SQLite. After exporting SQLite-only/stale live sessions
   and syncing backup commit `4020dd1f3`, a throwaway full host restore from the
@@ -160,14 +167,16 @@
 11. Backup freshness is not continuous.
     The backup repo at `3aad33520` was stale relative to the live restored
     agent on this machine: it was missing 12 June 4 JSONL transcripts and 10
-    `sessions.json` entries. The live backup hook was also still pointed at
+    `sessions.json` entries. Later, after the gateway and test runs created more
+    live sessions, backup commit `4020dd1f3` was missing one JSONL transcript and
+    39 SQLite-only session rows. The live backup hook was also still pointed at
     `/Users/emo/Backups/hermes-workspace-backup` and
     `/Users/emo/Library/Application Support/hermes-workspace-backup`, so it
     could not keep this machine current. The hook paths were normalized to
     `/Users/jameswenzel/dev/hermes-workspace-backup` and
     `/Users/jameswenzel/Library/Application Support/hermes-workspace-backup`,
     the hook was fixed to exclude `state.db*`, and backup commits through
-    `4020dd1f3` were pushed. `scripts/audit_hermes_backup.py` now proves file
+    `aa705ea61` were pushed. `scripts/audit_hermes_backup.py` now proves file
     freshness plus message-count parity between live SQLite, live JSONL, and
     backup JSONL.
 
