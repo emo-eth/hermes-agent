@@ -27,6 +27,10 @@
 
 - `hermes doctor` sees Python 3.11.15, full core packages, `~/.hermes/.env`, `config.yaml`, `SOUL.md`, memories, Discord tools, and `state.db`.
 - `hermes status` shows OpenAI Codex logged in, Discord configured, 37 active cron jobs, and 689 active gateway sessions.
+- A later live check on this recovery host showed Hermes installed at
+  `/Users/jameswenzel/.local/bin/hermes`, running via launchd from
+  `/Users/jameswenzel/dev/hermes-agent`, Discord connected as `bmo#1464`,
+  37 active scheduled jobs, and sessions visible via `hermes sessions list`.
 - A clean restore from the original backup reconstructed 840 sessions and
   47,661 messages in SQLite. After exporting SQLite-only/stale live sessions
   and syncing backup commit `4020dd1f3`, a throwaway full host restore from the
@@ -94,7 +98,8 @@
    local Obsidian app/`~/Documents/Sync/.obsidian`. Historical receipts still
    preserve old paths by design.
 
-6. Fork reconciliation is pushed but not landed into the active runtime.
+6. Fork reconciliation is pushed and reviewable, but not landed into the
+   active runtime.
    The fork is based on an older upstream and currently carries four commits
    not present upstream:
    - `7c05bdb41` local wiki retrieval tools
@@ -112,12 +117,15 @@
    `tests/gateway/test_discord_missed_message_backfill.py`,
    `tests/gateway/test_hindsight_retain_guardrails.py`, and
    `tests/tools/test_wiki_tool.py` (`24 passed` via `uv run --frozen --python
-   3.11 --extra dev pytest ...`). The active runtime checkout has not been
+   3.11 --extra dev pytest ...`). This port is now open as draft upstream PR
+   `NousResearch/hermes-agent#39316`. The active runtime checkout has not been
    switched to this branch because it still has restore work and unrelated
    local edits.
 
 7. Optional runtime dependencies are missing.
    Doctor reports `agent-browser`, browser CDP, computer use, Home Assistant, MOA/RL keys, and Hindsight availability gaps. Cron also surfaced missing `qmd` and a Quartz rebuild command failure.
+   Current live memory status reports Hindsight configured but unavailable until
+   `HINDSIGHT_API_KEY` and `HINDSIGHT_LLM_API_KEY` are supplied.
 
 8. Credential readiness was not explicit in restore reports.
    The restore report now includes `required_env`, `missing_required_env`, and
@@ -136,6 +144,18 @@
    restore drill, but it needs a `HERMES_RESTORE_TOKEN` repository secret with
    read access to the private `hermes-workspace-backup` and `hermes-beads`
    repositories.
+
+10a. The repository's broad `test` job is red on the restore PR for base-suite
+    failures that reproduce on `origin/main`.
+    Restore-specific checks are green locally and on GitHub where applicable:
+    attribution, Windows footguns, ruff, e2e, Nix macOS/Ubuntu, and supply-chain
+    checks pass on PR #5. The remaining `test` job fails on unrelated existing
+    tests, including auxiliary model selection, TTS media routing, update prompt
+    fixture setup, gateway restart PID filtering, plugin web route auth, builtin
+    tool discovery, and vision fast-path behavior. A representative subset was
+    reproduced on a clean detached `origin/main` worktree with
+    `uv run --frozen --python 3.11 --extra all --extra dev pytest ...` and noted
+    on PR #5.
 
 11. Backup freshness is not continuous.
     The backup repo at `3aad33520` was stale relative to the live restored
