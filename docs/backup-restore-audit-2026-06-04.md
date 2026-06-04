@@ -5,7 +5,7 @@
 - Runtime fork cloned to `/Users/jameswenzel/dev/hermes-agent` from `emo-eth/hermes-agent`.
 - Workspace backup cloned to `/Users/jameswenzel/dev/hermes-workspace-backup`;
   it was initially at `3aad33520`, then synced from live restored state and
-  pushed through latest strict-audited backup commit `1eb939f7c`.
+  continues to be pushed by the restored five-minute scheduler.
 - Beads tracker cloned to `/Users/jameswenzel/dev/hermes-beads`.
 - Hermes installed via `./setup-hermes.sh`, which uses `uv` and Python 3.11.
 - `~/.hermes` restored from `hermes-workspace-backup`; the pre-restore fresh home is preserved at `~/.hermes.pre-restore-20260604T180507Z`.
@@ -75,9 +75,10 @@
   `/Users/jameswenzel/Library/LaunchAgents/ai.hermes.workspace-backup.plist`
   with `StartInterval` 300. Its first run exposed a transient rsync race on
   `.skills_prompt_snapshot.json`; the hook now excludes that volatile file.
-  Follow-up scheduled/manual hook runs pushed backup commits `c324936a7`,
-  `341d3eeea`, `a34d1d6b1`, `34029bdc5`, `f617db8e9`, and `1eb939f7c`. The current strict audit report
-  `/tmp/hermes-backup-audit-1eb939f7c.json` passes with 915
+  Follow-up scheduled/manual hook runs pushed backup commits including
+  `c324936a7`, `341d3eeea`, `a34d1d6b1`, `34029bdc5`, `f617db8e9`, and
+  `1eb939f7c`. Strict audit reports such as
+  `/tmp/hermes-backup-audit-1eb939f7c.json` pass with 915
   live/backup JSONL transcripts, 712 `sessions.json` entries, 915 live SQLite
   sessions, 50,440 live SQLite messages, no missing legacy session coverage, no
   JSONL message drift, and no tracked/untracked backup `state.db`.
@@ -228,15 +229,15 @@
     sessions and stale transcripts, so the backup hook is now run by a macOS
     LaunchAgent every 300 seconds. The hook also rate-limits restore-drill
     dispatch attempts and excludes volatile `.skills_prompt_snapshot.json` so a
-    disappearing source file cannot abort the mirror. Backup commits through
-    `1eb939f7c` are pushed, and `scripts/audit_hermes_backup.py` now proves
+    disappearing source file cannot abort the mirror. The scheduler keeps
+    pushing fresh backup commits, and `scripts/audit_hermes_backup.py` now proves
     file freshness plus message-count parity between live SQLite, live JSONL,
     and backup JSONL.
 
 12. Raw-backup parity is now proven for sessions/messages, but not every runtime
     surface is one-click proven.
-    The latest strict audit at backup commit `1eb939f7c` proves raw-backup
-    parity for 915 sessions and 50,440 live SQLite messages at audit time. The latest clean container
+    Strict audits of scheduled backup commits prove raw-backup parity for 915
+    sessions and 50,440 live SQLite messages at audit time. The latest clean container
     restore proves 915 sessions and 50,440 messages from the raw backup snapshot
     at commit `f617db8e9` that it mounted. Remaining unproven surfaces are CI execution with private repo
     token, live Discord gateway startup with user-provided credentials, and a
@@ -346,10 +347,11 @@ Latest local container result:
 - host report export: `/tmp/hermes-restore-report-f617db8e9.json` was
   written and parsed successfully
 
-Latest strict backup audit after scheduler sync:
+Strict backup audit after scheduler sync:
 
-- backup commit: `1eb939f7c`
-- strict audit report: `/tmp/hermes-backup-audit-1eb939f7c.json`
+- audited backup commits: `1eb939f7c`, `0767d1bc6`
+- strict audit reports: `/tmp/hermes-backup-audit-1eb939f7c.json`,
+  `/tmp/hermes-backup-audit-0767d1bc6.json`
 - latest container restore report: `/tmp/hermes-restore-report-f617db8e9.json`
 - `doctor_status`: 0
 - `status_status`: 0
