@@ -305,7 +305,9 @@ UV_PROJECT_ENVIRONMENT=/Users/jameswenzel/dev/hermes-agent/venv \
   --backup-dir /Users/jameswenzel/dev/hermes-workspace-backup \
   --report /tmp/hermes-backup-freshness-strict.json \
   --fail-on-untracked-state-db \
-  --fail-on-state-legacy-gaps
+  --fail-on-state-legacy-gaps \
+  --max-extra-jsonl 0 \
+  --max-extra-index 0
 ```
 
 Local drill:

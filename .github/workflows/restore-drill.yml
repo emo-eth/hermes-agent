@@ -20,6 +20,7 @@ on:
       - 'scripts/export_state_sessions_to_legacy.py'
       - 'scripts/normalize_legacy_paths.py'
       - 'scripts/rebuild_legacy_session_db.py'
+      - 'tests/test_audit_hermes_backup.py'
       - 'tests/test_restore_hermes_script.py'
       - '.github/workflows/restore-drill.yml'
   pull_request:
@@ -31,6 +32,7 @@ on:
       - 'scripts/export_state_sessions_to_legacy.py'
       - 'scripts/normalize_legacy_paths.py'
       - 'scripts/rebuild_legacy_session_db.py'
+      - 'tests/test_audit_hermes_backup.py'
       - 'tests/test_restore_hermes_script.py'
       - '.github/workflows/restore-drill.yml'
 
@@ -70,7 +72,10 @@ jobs:
         working-directory: hermes-agent
         run: |
           bash -n scripts/restore-hermes.sh
-          uv run --frozen --python 3.11 --extra dev pytest tests/test_restore_hermes_script.py -q
+          uv run --frozen --python 3.11 --extra dev pytest \
+            tests/test_restore_hermes_script.py \
+            tests/test_audit_hermes_backup.py \
+            -q
 
       - name: Check private restore token
         id: restore-token

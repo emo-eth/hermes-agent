@@ -277,6 +277,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-missing-jsonl", type=int, default=0)
     parser.add_argument("--max-missing-index", type=int, default=0)
     parser.add_argument(
+        "--max-extra-jsonl",
+        type=int,
+        help="Fail when backup has more than this many JSONL transcripts absent from live state",
+    )
+    parser.add_argument(
+        "--max-extra-index",
+        type=int,
+        help="Fail when backup sessions.json has more than this many entries absent from live state",
+    )
+    parser.add_argument(
         "--fail-on-state-legacy-gaps",
         action="store_true",
         help="Fail when live state.db has sessions not represented by current legacy session files",
@@ -305,6 +315,11 @@ def main(argv: list[str] | None = None) -> int:
             f"missing_jsonl_count={report['missing_jsonl_count']} "
             f"> max_missing_jsonl={args.max_missing_jsonl}"
         )
+    if args.max_extra_jsonl is not None and report["extra_jsonl_count"] > args.max_extra_jsonl:
+        errors.append(
+            f"extra_jsonl_count={report['extra_jsonl_count']} "
+            f"> max_extra_jsonl={args.max_extra_jsonl}"
+        )
     if report["backup_jsonl_message_drift_count"] > 0:
         errors.append(
             "backup_jsonl_message_drift_count="
@@ -314,6 +329,11 @@ def main(argv: list[str] | None = None) -> int:
         errors.append(
             f"missing_sessions_json_entries={report['missing_sessions_json_entries']} "
             f"> max_missing_index={args.max_missing_index}"
+        )
+    if args.max_extra_index is not None and report["extra_sessions_json_entries"] > args.max_extra_index:
+        errors.append(
+            f"extra_sessions_json_entries={report['extra_sessions_json_entries']} "
+            f"> max_extra_index={args.max_extra_index}"
         )
     if args.fail_on_untracked_state_db and report["backup_state_db_size_bytes"] and not report["backup_state_db_tracked"]:
         errors.append("backup state.db exists but is not tracked")
