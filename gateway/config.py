@@ -840,6 +840,22 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                backfill_cfg = discord_cfg.get("missed_message_backfill")
+                if isinstance(backfill_cfg, dict):
+                    _backfill_env = {
+                        "enabled": "DISCORD_MISSED_MESSAGE_BACKFILL",
+                        "channels": "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
+                        "window_seconds": "DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS",
+                        "limit": "DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT",
+                        "max_dispatches": "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES",
+                    }
+                    for _key, _env in _backfill_env.items():
+                        if _key not in backfill_cfg or os.getenv(_env):
+                            continue
+                        _value = backfill_cfg[_key]
+                        if isinstance(_value, list):
+                            _value = ",".join(str(v) for v in _value)
+                        os.environ[_env] = str(_value).lower() if isinstance(_value, bool) else str(_value)
                 # ignored_channels: channels where bot never responds (even when mentioned)
                 ic = discord_cfg.get("ignored_channels")
                 if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
