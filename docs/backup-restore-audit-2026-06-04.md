@@ -5,7 +5,7 @@
 - Runtime fork cloned to `/Users/jameswenzel/dev/hermes-agent` from `emo-eth/hermes-agent`.
 - Workspace backup cloned to `/Users/jameswenzel/dev/hermes-workspace-backup`;
   it was initially at `3aad33520`, then synced from live restored state and
-  pushed through latest backup commit `e33db0c1e`.
+  pushed through latest verified backup commit `a34d1d6b1`.
 - Beads tracker cloned to `/Users/jameswenzel/dev/hermes-beads`.
 - Hermes installed via `./setup-hermes.sh`, which uses `uv` and Python 3.11.
 - `~/.hermes` restored from `hermes-workspace-backup`; the pre-restore fresh home is preserved at `~/.hermes.pre-restore-20260604T180507Z`.
@@ -21,7 +21,14 @@
   once the restore workflow is landed and `HERMES_RESTORE_TOKEN` is configured.
   The first post-hook push logged the expected GitHub 404 because
   `restore-drill.yml` is still only on the draft restore PR branch, not
-  `main`; the backup push still completed successfully.
+  `main`; the backup push still completed successfully. The hook now rate
+  limits restore-drill dispatch attempts with
+  `HERMES_RESTORE_DRILL_MIN_INTERVAL_SECONDS` so periodic backup syncs do not
+  spam GitHub/CI.
+- A user LaunchAgent, `ai.hermes.workspace-backup`, now runs
+  `~/.hermes/hooks/backup_push.sh` every 300 seconds on this Mac. The restore
+  script auto-installs the same scheduler on macOS only for real default
+  restores to `$HOME/.hermes`; temp/container restores skip it.
 - Active restored path references are normalized with `scripts/normalize_legacy_paths.py`;
   historical session transcripts, logs, cron output, webhook captures, and
   snapshots are preserved as receipts.
@@ -63,6 +70,17 @@
   `sessions.json` entries, 908 live SQLite sessions, 49,505 live SQLite
   messages, no live DB sessions missing legacy files, no message drift, and no
   tracked/untracked backup `state.db`.
+- Backup freshness then drifted again while the live gateway was active, which
+  proved the weekly cron was not enough. A new LaunchAgent was installed at
+  `/Users/jameswenzel/Library/LaunchAgents/ai.hermes.workspace-backup.plist`
+  with `StartInterval` 300. Its first run exposed a transient rsync race on
+  `.skills_prompt_snapshot.json`; the hook now excludes that volatile file.
+  Follow-up scheduled/manual hook runs pushed backup commits `c324936a7`,
+  `341d3eeea`, and `a34d1d6b1`. The current strict audit report
+  `/tmp/hermes-backup-audit-after-scheduler-current.json` passes with 915
+  live/backup JSONL transcripts, 712 `sessions.json` entries, 915 live SQLite
+  sessions, 50,440 live SQLite messages, no missing legacy session coverage, no
+  JSONL message drift, and no tracked/untracked backup `state.db`.
 - A clean restore from the original backup reconstructed 840 sessions and
   47,661 messages in SQLite. After exporting SQLite-only/stale live sessions
   and syncing backup commit `4020dd1f3`, a throwaway full host restore from the
@@ -93,12 +111,14 @@
   normalizes restored backup-hook agent checkout paths to the chosen
   `--agent-dir`/`--repos-dir` checkout.
 - `scripts/test-hermes-restore-container.sh` passed again in a clean `debian:13.4`
-  container. It restored into `/tmp/hermes-home`, rebuilt 908 sessions and
-  49,505 messages, ran `hermes doctor`, `hermes status`, `hermes sessions
+  container. It restored into `/tmp/hermes-home`, rebuilt 915 sessions and
+  50,316 messages, ran `hermes doctor`, `hermes status`, `hermes sessions
   stats`, `hermes cron list`, and `hermes gateway status` with status 0, and
   validated the machine-readable restore report. Latest report:
-  `/tmp/hermes-restore-report-latest-container.json`, timestamp
-  `20260604T215840Z`.
+  `/tmp/hermes-restore-report-after-scheduler.json`, timestamp
+  `20260604T221521Z`. The restore report correctly shows
+  `backup_scheduler_status: skipped` because this was a temp/container restore
+  to `/tmp/hermes-home`, not a real macOS restore to `$HOME/.hermes`.
 
 ## Deficiencies Found
 
@@ -204,17 +224,23 @@
     `/Users/jameswenzel/dev/hermes-workspace-backup` and
     `/Users/jameswenzel/Library/Application Support/hermes-workspace-backup`,
     the hook was fixed to exclude `state.db*`, and backup commits through
-    `e33db0c1e` were pushed. `scripts/audit_hermes_backup.py` now proves file
-    freshness plus message-count parity between live SQLite, live JSONL, and
-    backup JSONL.
+    `e33db0c1e` were pushed. A later live drift audit still found new active
+    sessions and stale transcripts, so the backup hook is now run by a macOS
+    LaunchAgent every 300 seconds. The hook also rate-limits restore-drill
+    dispatch attempts and excludes volatile `.skills_prompt_snapshot.json` so a
+    disappearing source file cannot abort the mirror. Backup commits through
+    `a34d1d6b1` are pushed, and `scripts/audit_hermes_backup.py` now proves
+    file freshness plus message-count parity between live SQLite, live JSONL,
+    and backup JSONL.
 
 12. Raw-backup parity is now proven for sessions/messages, but not every runtime
     surface is one-click proven.
-    The latest raw backup rebuilds the same 908 sessions and 49,505 messages as
-    live SQLite at audit time. Remaining unproven surfaces are CI execution with
-    private repo token, live Discord gateway startup with user-provided
-    credentials, and a full OAuth/provider credential bootstrap on a brand-new
-    machine.
+    The latest strict audit proves raw-backup parity for 915 sessions and
+    50,440 live SQLite messages at audit time. The latest clean container
+    restore proves 915 sessions and 50,316 messages from the raw backup snapshot
+    it mounted. Remaining unproven surfaces are CI execution with private repo
+    token, live Discord gateway startup with user-provided credentials, and a
+    full OAuth/provider credential bootstrap on a brand-new machine.
 
 ## Proposed Robustness Test
 
@@ -285,15 +311,15 @@ scripts/test-hermes-restore-container.sh \
 Latest local container result:
 
 - container image: `debian:13.4`
-- report timestamp: `20260604T215840Z`
-- report: `/tmp/hermes-restore-report-latest-container.json`
+- report timestamp: `20260604T221521Z`
+- report: `/tmp/hermes-restore-report-after-scheduler.json`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
 - `cron_status`: 0
 - `gateway_check_status`: 0
-- `session_count`: 908
-- `message_count`: 49,505
+- `session_count`: 915
+- `message_count`: 50,316
 - cron jobs: 37 active, 38 total
 - required cron jobs missing: none
 - required restore env vars: `DISCORD_BOT_TOKEN,DISCORD_ALLOWED_USERS`
@@ -312,22 +338,25 @@ Latest local container result:
   rewritten to that path in active live state and in a throwaway host restore.
 - historical legacy `/Users/emo/.hermes` path references remain in receipts
 - gateway: status command works, but the service is not started by this drill
-- host report export: `/tmp/hermes-restore-report-latest-container.json` was
+- backup scheduler: skipped, because the drill restores to `/tmp/hermes-home`
+  rather than a real macOS `$HOME/.hermes`
+- host report export: `/tmp/hermes-restore-report-after-scheduler.json` was
   written and parsed successfully
 
-Latest strict backup audit after final backup sync:
+Latest strict backup audit after scheduler sync:
 
-- backup commit: `e33db0c1e`
-- strict audit report: `/tmp/hermes-backup-audit-after-latest-hook-sync.json`
-- latest container restore report: `/tmp/hermes-restore-report-latest-container.json`
+- backup commit: `a34d1d6b1`
+- strict audit report: `/tmp/hermes-backup-audit-after-scheduler-current.json`
+- latest container restore report: `/tmp/hermes-restore-report-after-scheduler.json`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
 - `cron_status`: 0
 - `gateway_check_status`: 0
 - `smoke_status`: 0, skipped intentionally for no-LLM restore verification
-- `session_count`: 908
-- `message_count`: 49,505
+- `session_count`: 915
+- `message_count`: 50,316 in the latest container restore; 50,440 live SQLite
+  messages in the latest strict audit after the scheduler's next backup commit
 - real restored `session_meta` DB messages: 13
 - cron jobs: 37 active, 38 total
 - required cron jobs missing: none
@@ -338,8 +367,8 @@ Latest strict backup audit after final backup sync:
 - active legacy backup-runtime paths after normalize: 0
 - active legacy agent-dir paths after normalize: 0
 - active legacy Obsidian paths after normalize: 0
-- live/backup JSONL transcript count: 908/908
-- live/backup `sessions.json` entry count: 705/705
+- live/backup JSONL transcript count: 915/915
+- live/backup `sessions.json` entry count: 712/712
 - missing backup JSONL files: 0
 - missing backup `sessions.json` entries: 0
 - live JSONL message mismatches against `state.db`: 0

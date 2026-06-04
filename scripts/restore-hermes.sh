@@ -11,6 +11,9 @@ machine-readable restore report.
 
 Options:
   --start-gateway          Install/start the default gateway service after restore.
+  --install-backup-scheduler
+                           Install/start the macOS workspace backup LaunchAgent.
+  --skip-backup-scheduler  Do not install the workspace backup LaunchAgent.
   --skip-smoke             Skip the LLM smoke prompt. Use for no-credential CI.
   --skip-path-normalize    Keep legacy /Users/emo/.hermes references untouched.
   --obsidian-vault DIR     Rewrite active restored Obsidian vault paths to DIR.
@@ -37,6 +40,9 @@ Environment defaults:
   HERMES_LEGACY_OBSIDIAN_VAULT=/Users/emo/Documents/Sync
   HERMES_OBSIDIAN_VAULT_PATH=<auto-detected from local Obsidian/Documents/Sync>
   HERMES_BACKUP_RUNTIME_DIR="$HOME/Library/Application Support/hermes-workspace-backup"
+  HERMES_INSTALL_BACKUP_SCHEDULER=auto
+  HERMES_BACKUP_SCHEDULER_INTERVAL=300
+  HERMES_RESTORE_DRILL_MIN_INTERVAL_SECONDS=86400
   HERMES_PROMPT_MISSING_ENV=0
   HERMES_REQUIRED_CRON="daily-bedtime-reminder,..."
   HERMES_REQUIRED_ENV=DISCORD_BOT_TOKEN,DISCORD_ALLOWED_USERS
@@ -66,10 +72,15 @@ AGENT_DIR="${HERMES_AGENT_DIR:-}"
 BACKUP_DIR="${HERMES_BACKUP_DIR:-}"
 BEADS_DIR="${HERMES_BEADS_DIR:-}"
 REPORT_PATH="${HERMES_RESTORE_REPORT:-}"
+INSTALL_BACKUP_SCHEDULER="${HERMES_INSTALL_BACKUP_SCHEDULER:-auto}"
+BACKUP_SCHEDULER_INTERVAL="${HERMES_BACKUP_SCHEDULER_INTERVAL:-300}"
+RESTORE_DRILL_MIN_INTERVAL_SECONDS="${HERMES_RESTORE_DRILL_MIN_INTERVAL_SECONDS:-86400}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --start-gateway) START_GATEWAY=1 ;;
+    --install-backup-scheduler) INSTALL_BACKUP_SCHEDULER=1 ;;
+    --skip-backup-scheduler) INSTALL_BACKUP_SCHEDULER=0 ;;
     --skip-smoke) SKIP_SMOKE=1 ;;
     --skip-path-normalize) SKIP_PATH_NORMALIZE=1 ;;
     --obsidian-vault) OBSIDIAN_VAULT_PATH="${2:?missing DIR for --obsidian-vault}"; shift ;;
@@ -197,6 +208,77 @@ set_env_file_value() {
   ' "$env_file" >"$tmp"
   mv "$tmp" "$env_file"
   chmod 600 "$env_file"
+}
+
+install_backup_scheduler() {
+  local plist="$HOME/Library/LaunchAgents/ai.hermes.workspace-backup.plist"
+  local label="ai.hermes.workspace-backup"
+  local uid
+
+  if [ "$(uname -s)" != "Darwin" ]; then
+    printf 'skipped:not-macos:%s\n' "$plist"
+    return 0
+  fi
+
+  if [ ! -x "$HERMES_HOME/hooks/backup_push.sh" ]; then
+    chmod +x "$HERMES_HOME/hooks/backup_push.sh" 2>/dev/null || true
+  fi
+  if [ ! -x "$HERMES_HOME/hooks/backup_push.sh" ]; then
+    printf 'failed:missing-hook:%s\n' "$plist"
+    return 0
+  fi
+
+  mkdir -p "$HOME/Library/LaunchAgents" "$BACKUP_RUNTIME_DIR"
+  cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>exec "$HERMES_HOME/hooks/backup_push.sh"</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HERMES_HOME</key>
+    <string>$HERMES_HOME</string>
+    <key>HERMES_TRIGGER_RESTORE_DRILL</key>
+    <string>1</string>
+    <key>HERMES_RESTORE_DRILL_MIN_INTERVAL_SECONDS</key>
+    <string>$RESTORE_DRILL_MIN_INTERVAL_SECONDS</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>$BACKUP_SCHEDULER_INTERVAL</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$BACKUP_RUNTIME_DIR/workspace-backup.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>$BACKUP_RUNTIME_DIR/workspace-backup.launchd.err.log</string>
+  <key>WorkingDirectory</key>
+  <string>$HOME</string>
+</dict>
+</plist>
+EOF
+  if command -v plutil >/dev/null 2>&1; then
+    if ! plutil -lint "$plist" >/dev/null 2>&1; then
+      printf 'failed:plist-lint:%s\n' "$plist"
+      return 0
+    fi
+  fi
+  uid="$(id -u)"
+  launchctl bootout "gui/$uid" "$plist" >/dev/null 2>&1 || true
+  if launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1; then
+    printf 'installed:%s\n' "$plist"
+  else
+    printf 'failed:launchctl-bootstrap:%s\n' "$plist"
+  fi
 }
 
 join_csv() {
@@ -528,6 +610,26 @@ if [ "$START_GATEWAY" = "1" ]; then
 fi
 hermes gateway status >/tmp/hermes-restore-gateway-status.log 2>&1 || gateway_check_status=$?
 
+backup_scheduler_status="skipped"
+backup_scheduler_plist=""
+if [ "$INSTALL_BACKUP_SCHEDULER" = "auto" ]; then
+  if [ "$HERMES_HOME" = "$HOME/.hermes" ]; then
+    INSTALL_BACKUP_SCHEDULER=1
+  else
+    INSTALL_BACKUP_SCHEDULER=0
+  fi
+fi
+if [ "$INSTALL_BACKUP_SCHEDULER" = "1" ]; then
+  backup_scheduler_result="$(install_backup_scheduler)"
+  backup_scheduler_status="${backup_scheduler_result%%:*}"
+  backup_scheduler_plist="${backup_scheduler_result#*:}"
+  if [ "$backup_scheduler_plist" = "$backup_scheduler_status" ]; then
+    backup_scheduler_plist=""
+  else
+    backup_scheduler_plist="${backup_scheduler_plist#*:}"
+  fi
+fi
+
 session_count="$(awk '/^Total sessions:/ {print $3}' /tmp/hermes-restore-sessions.log 2>/dev/null || true)"
 message_count="$(awk '/^Total messages:/ {print $3}' /tmp/hermes-restore-sessions.log 2>/dev/null || true)"
 smoke_output="$(tr -d '\r' </tmp/hermes-restore-smoke.log | tail -n 1)"
@@ -624,7 +726,11 @@ cat >"$report" <<EOF
   "obsidian_path_normalize_replacements": "${obsidian_replacements:-}",
   "obsidian_path_normalize_skipped": "${obsidian_skipped:-}",
   "gateway_status": "$(json_escape "$gateway_status")",
-  "gateway_running": "$(json_escape "$gateway_running")"
+  "gateway_running": "$(json_escape "$gateway_running")",
+  "backup_scheduler_status": "$(json_escape "$backup_scheduler_status")",
+  "backup_scheduler_plist": "$(json_escape "$backup_scheduler_plist")",
+  "backup_scheduler_interval_seconds": "$(json_escape "$BACKUP_SCHEDULER_INTERVAL")",
+  "restore_drill_min_interval_seconds": "$(json_escape "$RESTORE_DRILL_MIN_INTERVAL_SECONDS")"
 }
 EOF
 
