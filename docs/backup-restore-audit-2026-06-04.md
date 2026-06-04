@@ -41,11 +41,13 @@
 - A clean restore from the original backup reconstructed 840 sessions and
   47,661 messages in SQLite. After exporting SQLite-only/stale live sessions
   and syncing backup commit `4020dd1f3`, a throwaway full host restore from the
-  raw backup reconstructs 865 sessions and 49,297 messages, matching the live
-  SQLite session/message counts captured by the strict audit.
+  raw backup reconstructed 865 sessions and 49,297 messages. After later
+  gateway/test activity, backup commit `aa705ea61` exported the remaining live
+  SQLite-only rows; the latest container restore rebuilds 905 sessions and
+  49,414 messages, matching the latest strict live/backup audit.
 - `scripts/audit_hermes_backup.py --fail-on-state-legacy-gaps
-  --fail-on-untracked-state-db` now verifies that live and backup have 865 JSONL
-  transcripts, 701 `sessions.json` entries, no missing files, no JSONL message
+  --fail-on-untracked-state-db` now verifies that live and backup have 905 JSONL
+  transcripts, 702 `sessions.json` entries, no missing files, no JSONL message
   drift, no live DB sessions without legacy representation, no message-bearing
   DB sessions without JSONL, and no tracked/untracked backup `state.db`.
 - `hermes -z 'Smoke test...' --ignore-rules` returned the expected response.
@@ -66,12 +68,12 @@
   normalizes restored backup-hook agent checkout paths to the chosen
   `--agent-dir`/`--repos-dir` checkout.
 - `scripts/test-hermes-restore-container.sh` passed again in a clean `debian:13.4`
-  container. It restored into `/tmp/hermes-home`, rebuilt 865 sessions and
-  49,297 messages, ran `hermes doctor`, `hermes status`, `hermes sessions
+  container. It restored into `/tmp/hermes-home`, rebuilt 905 sessions and
+  49,414 messages, ran `hermes doctor`, `hermes status`, `hermes sessions
   stats`, `hermes cron list`, and `hermes gateway status` with status 0, and
   validated the machine-readable restore report. Latest report:
   `/tmp/hermes-restore-report-latest-container.json`, timestamp
-  `20260604T202626Z`.
+  `20260604T212918Z`.
 
 ## Deficiencies Found
 
@@ -182,7 +184,7 @@
 
 12. Raw-backup parity is now proven for sessions/messages, but not every runtime
     surface is one-click proven.
-    The latest raw backup rebuilds the same 865 sessions and 49,297 messages as
+    The latest raw backup rebuilds the same 905 sessions and 49,414 messages as
     live SQLite at audit time. Remaining unproven surfaces are CI execution with
     private repo token, live Discord gateway startup with user-provided
     credentials, and a full OAuth/provider credential bootstrap on a brand-new
@@ -250,15 +252,15 @@ scripts/test-hermes-restore-container.sh \
 Latest local container result:
 
 - container image: `debian:13.4`
-- report timestamp: `20260604T202626Z`
+- report timestamp: `20260604T212918Z`
 - report: `/tmp/hermes-restore-report-latest-container.json`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
 - `cron_status`: 0
 - `gateway_check_status`: 0
-- `session_count`: 865
-- `message_count`: 49,297
+- `session_count`: 905
+- `message_count`: 49,414
 - cron jobs: 37 active, 38 total
 - required cron jobs missing: none
 - required restore env vars: `DISCORD_BOT_TOKEN,DISCORD_ALLOWED_USERS`
@@ -268,31 +270,31 @@ Latest local container result:
 - active legacy `/Users/emo/.hermes` path references before normalize: 31 active
 - active legacy `/Users/emo/.hermes` path references after normalize: 0
 - restored `/Users/emo/.hermes` replacements: 461 across 31 active files
-- restored legacy agent-dir replacements: 2
+- restored legacy agent-dir replacements: 1
 - active legacy agent-dir paths after normalize: 0
 - Obsidian vault path normalization: skipped in clean container because no host
-  Obsidian vault is mounted; on this Mac, `/Users/emo/Documents/Sync` was
-  rewritten to `/Users/jameswenzel/Documents/Sync` in active live state and in
-  a throwaway host restore
+  Obsidian vault is mounted and no `--obsidian-vault` override was passed. On
+  this Mac, Obsidian's app registry lists a single open vault at
+  `/Users/jameswenzel/Documents/Sync`, and `/Users/emo/Documents/Sync` was
+  rewritten to that path in active live state and in a throwaway host restore.
 - historical legacy `/Users/emo/.hermes` path references remain in receipts
 - gateway: status command works, but the service is not started by this drill
 - host report export: `/tmp/hermes-restore-report-latest-container.json` was
   written and parsed successfully
 
-Latest host verification after backup sync:
+Latest strict backup audit after final backup sync:
 
-- backup commit: `4020dd1f3`
-- strict audit report: `/tmp/hermes-backup-audit-after-content-drift-check.json`
-- rebuild check temp home: `/tmp/hermes-rebuild-check.aoxFFn/home`
-- full restore report: `/tmp/hermes-full-restore-latest.e7NoME/restore-report.json`
+- backup commit: `aa705ea61`
+- strict audit report: `/tmp/hermes-backup-audit-current-after-sync.json`
+- latest container restore report: `/tmp/hermes-restore-report-latest-container.json`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
 - `cron_status`: 0
 - `gateway_check_status`: 0
 - `smoke_status`: 0, skipped intentionally for no-LLM restore verification
-- `session_count`: 865
-- `message_count`: 49,297
+- `session_count`: 905
+- `message_count`: 49,414
 - real restored `session_meta` DB messages: 13
 - cron jobs: 37 active, 38 total
 - required cron jobs missing: none
@@ -303,8 +305,8 @@ Latest host verification after backup sync:
 - active legacy backup-runtime paths after normalize: 0
 - active legacy agent-dir paths after normalize: 0
 - active legacy Obsidian paths after normalize: 0
-- live/backup JSONL transcript count: 865/865
-- live/backup `sessions.json` entry count: 701/701
+- live/backup JSONL transcript count: 905/905
+- live/backup `sessions.json` entry count: 702/702
 - missing backup JSONL files: 0
 - missing backup `sessions.json` entries: 0
 - live JSONL message mismatches against `state.db`: 0
