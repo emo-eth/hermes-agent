@@ -17,6 +17,8 @@ Options:
   --skip-smoke             Skip the LLM smoke prompt. Use for no-credential CI.
   --skip-path-normalize    Keep legacy /Users/emo/.hermes references untouched.
   --obsidian-vault DIR     Rewrite active restored Obsidian vault paths to DIR.
+  --print-detected-obsidian-vault
+                           Print the auto-detected local Obsidian vault and exit.
   --prompt-missing-env     Prompt for missing required env vars and write .env.
   --force-session-rebuild  Rebuild state.db even if it already has sessions.
   --required-cron CSV      Comma-separated cron job names that must restore.
@@ -75,6 +77,7 @@ REPORT_PATH="${HERMES_RESTORE_REPORT:-}"
 INSTALL_BACKUP_SCHEDULER="${HERMES_INSTALL_BACKUP_SCHEDULER:-auto}"
 BACKUP_SCHEDULER_INTERVAL="${HERMES_BACKUP_SCHEDULER_INTERVAL:-300}"
 RESTORE_DRILL_MIN_INTERVAL_SECONDS="${HERMES_RESTORE_DRILL_MIN_INTERVAL_SECONDS:-86400}"
+PRINT_DETECTED_OBSIDIAN_VAULT=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -84,6 +87,7 @@ while [ "$#" -gt 0 ]; do
     --skip-smoke) SKIP_SMOKE=1 ;;
     --skip-path-normalize) SKIP_PATH_NORMALIZE=1 ;;
     --obsidian-vault) OBSIDIAN_VAULT_PATH="${2:?missing DIR for --obsidian-vault}"; shift ;;
+    --print-detected-obsidian-vault) PRINT_DETECTED_OBSIDIAN_VAULT=1 ;;
     --prompt-missing-env) PROMPT_MISSING_ENV=1 ;;
     --force-session-rebuild) FORCE_SESSION_REBUILD=1 ;;
     --required-cron) REQUIRED_CRON="${2:?missing CSV for --required-cron}"; shift ;;
@@ -375,8 +379,23 @@ detect_obsidian_vault() {
   fi
 
   local obsidian_json="$HOME/Library/Application Support/obsidian/obsidian.json"
+  local path
+  local first_path=""
   if [ -f "$obsidian_json" ]; then
-    sed -nE 's/.*"path":"([^"]+)".*/\1/p' "$obsidian_json" | head -n 1
+    while IFS= read -r path; do
+      if [ -z "$first_path" ]; then
+        first_path="$path"
+      fi
+      if [ -d "$path/.obsidian" ]; then
+        printf '%s\n' "$path"
+        return
+      fi
+    done <<EOF
+$(sed -nE 's/.*"path"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$obsidian_json")
+EOF
+    if [ -n "$first_path" ]; then
+      printf '%s\n' "$first_path"
+    fi
   fi
 }
 
@@ -407,6 +426,11 @@ csv_missing_from_file() {
     join_csv "${missing[@]}"
   fi
 }
+
+if [ "$PRINT_DETECTED_OBSIDIAN_VAULT" = "1" ]; then
+  detect_obsidian_vault
+  exit 0
+fi
 
 need git
 need rsync
