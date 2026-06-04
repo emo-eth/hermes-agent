@@ -43,6 +43,17 @@ have() {
   command -v "$1" >/dev/null 2>&1
 }
 
+run_as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif have sudo; then
+    sudo "$@"
+  else
+    echo "missing required command: sudo (rerun as root or install prerequisites manually)" >&2
+    exit 1
+  fi
+}
+
 install_uv() {
   if have uv; then
     return
@@ -94,28 +105,42 @@ EOF
 }
 
 install_linux_prereqs() {
-  missing=()
+  base_missing=()
   for cmd in git rsync curl; do
-    have "$cmd" || missing+=("$cmd")
+    have "$cmd" || base_missing+=("$cmd")
   done
-  if ! have gh; then
-    missing+=(gh)
-  fi
-  if [ "${#missing[@]}" -eq 0 ]; then
+  if [ "${#base_missing[@]}" -eq 0 ] && have gh; then
     return
   fi
   if [ "$NO_INSTALL" = "1" ]; then
+    missing=("${base_missing[@]}")
+    have gh || missing+=(gh)
     echo "missing required commands: ${missing[*]}" >&2
     exit 1
   fi
   if have apt-get; then
-    sudo apt-get update
-    sudo apt-get install -y git rsync curl gh
+    run_as_root apt-get update
+    if [ "${#base_missing[@]}" -gt 0 ]; then
+      run_as_root apt-get install -y git rsync curl ca-certificates
+    fi
+    if ! have gh; then
+      run_as_root install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | run_as_root tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+      run_as_root chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+      arch="$(dpkg --print-architecture)"
+      echo "deb [arch=$arch signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        | run_as_root tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+      run_as_root apt-get update
+      run_as_root apt-get install -y gh
+    fi
   elif have dnf; then
-    sudo dnf install -y git rsync curl gh
+    run_as_root dnf install -y git rsync curl gh
   elif have yum; then
-    sudo yum install -y git rsync curl gh
+    run_as_root yum install -y git rsync curl gh
   else
+    missing=("${base_missing[@]}")
+    have gh || missing+=(gh)
     echo "missing required commands: ${missing[*]}" >&2
     echo "Install git, rsync, curl, and gh with your package manager, then rerun." >&2
     exit 1

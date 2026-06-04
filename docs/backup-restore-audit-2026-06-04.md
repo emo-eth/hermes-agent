@@ -467,7 +467,9 @@ The full procedure should become:
 The paste-on-a-fresh-machine entrypoint now exists as
 `scripts/bootstrap-hermes-restore.sh`. It checks or installs `git`, `rsync`,
 `curl`, `gh`, and `uv`, verifies `gh auth status`, then delegates to
-`scripts/restore-hermes.sh`.
+`scripts/restore-hermes.sh`. On Linux it handles root or `sudo` shells and
+installs GitHub CLI from GitHub's apt repository when `gh` is not already
+available.
 
 From a checked-out runtime repo:
 
