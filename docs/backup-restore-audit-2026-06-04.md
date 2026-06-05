@@ -234,6 +234,13 @@
     exercises setup in a clean container, and the local locked restore printed
     `Dependencies installed (lockfile verified)`.
 
+10c. Restore CI had a near-term GitHub Actions runtime aging risk.
+    The restore-drill run warned that its pinned checkout, setup-uv, and
+    upload-artifact actions were still running on Node 20, which GitHub plans
+    to force-upgrade to Node 24. The restore-drill workflow now pins
+    Node 24-capable SHAs for `actions/checkout` v6.0.3,
+    `astral-sh/setup-uv` v8.2.0, and `actions/upload-artifact` v7.0.1.
+
 11. Backup freshness is not continuous.
     The backup repo at `3aad33520` was stale relative to the live restored
     agent on this machine: it was missing 12 June 4 JSONL transcripts and 10
