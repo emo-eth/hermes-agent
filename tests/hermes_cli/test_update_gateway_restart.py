@@ -1066,8 +1066,14 @@ class TestGetServicePids:
 class TestFindGatewayPidsExclude:
     """find_gateway_pids respects exclude_pids."""
 
+    @staticmethod
+    def _force_ps_scan(monkeypatch):
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", lambda path: False if path == "/proc" else True)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+
     def test_excludes_specified_pids(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        self._force_ps_scan(monkeypatch)
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1082,12 +1088,13 @@ class TestFindGatewayPidsExclude:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         monkeypatch.setattr("os.getpid", lambda: 999)
 
-        pids = gateway_cli.find_gateway_pids(exclude_pids={100})
+        pids = gateway_cli.find_gateway_pids(exclude_pids={100}, all_profiles=True)
         assert 100 not in pids
         assert 200 in pids
 
     def test_no_exclude_returns_all(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        self._force_ps_scan(monkeypatch)
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
@@ -1102,7 +1109,7 @@ class TestFindGatewayPidsExclude:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
         monkeypatch.setattr("os.getpid", lambda: 999)
 
-        pids = gateway_cli.find_gateway_pids()
+        pids = gateway_cli.find_gateway_pids(all_profiles=True)
         assert 100 in pids
         assert 200 in pids
 
@@ -1111,6 +1118,7 @@ class TestFindGatewayPidsExclude:
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        self._force_ps_scan(monkeypatch)
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
