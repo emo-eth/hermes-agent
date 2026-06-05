@@ -16,24 +16,28 @@ on:
       - 'scripts/restore-hermes.sh'
       - 'scripts/bootstrap-hermes-restore.sh'
       - 'scripts/test-hermes-restore-container.sh'
+      - 'scripts/validate_hermes_restore_report.py'
       - 'scripts/audit_hermes_backup.py'
       - 'scripts/export_state_sessions_to_legacy.py'
       - 'scripts/normalize_legacy_paths.py'
       - 'scripts/rebuild_legacy_session_db.py'
       - 'tests/test_audit_hermes_backup.py'
       - 'tests/test_restore_hermes_script.py'
+      - 'tests/test_validate_hermes_restore_report.py'
       - '.github/workflows/restore-drill.yml'
   pull_request:
     paths:
       - 'scripts/restore-hermes.sh'
       - 'scripts/bootstrap-hermes-restore.sh'
       - 'scripts/test-hermes-restore-container.sh'
+      - 'scripts/validate_hermes_restore_report.py'
       - 'scripts/audit_hermes_backup.py'
       - 'scripts/export_state_sessions_to_legacy.py'
       - 'scripts/normalize_legacy_paths.py'
       - 'scripts/rebuild_legacy_session_db.py'
       - 'tests/test_audit_hermes_backup.py'
       - 'tests/test_restore_hermes_script.py'
+      - 'tests/test_validate_hermes_restore_report.py'
       - '.github/workflows/restore-drill.yml'
 
 permissions:
@@ -75,6 +79,7 @@ jobs:
           uv run --frozen --python 3.11 --extra dev pytest \
             tests/test_restore_hermes_script.py \
             tests/test_audit_hermes_backup.py \
+            tests/test_validate_hermes_restore_report.py \
             -q
 
       - name: Check private restore token
