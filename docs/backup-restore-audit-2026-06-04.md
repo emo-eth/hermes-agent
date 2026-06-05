@@ -208,17 +208,15 @@
    read access to the private `hermes-workspace-backup` and `hermes-beads`
    repositories.
 
-10a. The repository's broad `test` job is red on the restore PR for base-suite
-    failures that reproduce on `origin/main`.
-    Restore-specific checks are green locally and on GitHub where applicable:
-    attribution, Windows footguns, ruff, e2e, Nix macOS/Ubuntu, and supply-chain
-    checks pass on PR #5. The remaining `test` job fails on unrelated existing
-    tests, including auxiliary model selection, TTS media routing, update prompt
-    fixture setup, gateway restart PID filtering, plugin web route auth, builtin
-    tool discovery, and vision fast-path behavior. A representative subset was
-    reproduced on a clean detached `origin/main` worktree with
-    `uv run --frozen --python 3.11 --extra all --extra dev pytest ...` and noted
-    on PR #5.
+10a. The repository's broad `test` job had unrelated base-suite fixture drift
+    while the restore PR was being validated.
+    The restore-specific checks were green first, then the broad-suite fixture
+    drift was fixed in follow-up test-only commits. On PR head `b52937295`,
+    GitHub Actions passed attribution, Windows footguns, ruff, e2e, Nix
+    macOS/Ubuntu, supply-chain, restore-drill, `uv lock --check`, and the broad
+    `test` job (`22048+` tests in the broad suite). The remaining CI limitation
+    is no longer base-suite health; it is the missing private restore token
+    required for a full backup/beads clean-container drill.
 
 10b. The restore setup dependency path used to be less reproducible than the
     restore drill assumed.
