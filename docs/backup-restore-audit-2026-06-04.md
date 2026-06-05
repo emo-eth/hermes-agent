@@ -479,7 +479,11 @@ The full procedure should become:
    `restore-report.json` with pass/fail, exact agent/backup/beads commit SHAs,
    session counts, status/doctor/cron/gateway command statuses, missing env
    keys, required cron misses, auth-file presence, and
-   Hermes-home/backup/agent/Obsidian path-rewrite counts.
+   Hermes-home/backup/agent/Obsidian path-rewrite counts. The report now also
+   embeds the strict backup parity audit status plus missing/extra JSONL,
+   missing/extra `sessions.json`, message-drift, state/legacy gap, and backup
+   `state.db` fields so a clean restore artifact is enough to diagnose whether
+   the raw backup was an exact session mirror.
 
 ## Target One-Button Flow
 

@@ -630,6 +630,7 @@ status_status=0
 cron_status=0
 gateway_check_status=0
 smoke_status=0
+backup_audit_status=0
 
 hermes doctor >/tmp/hermes-restore-doctor.log 2>&1 || doctor_status=$?
 hermes sessions stats >/tmp/hermes-restore-sessions.log 2>&1 || sessions_status=$?
@@ -649,6 +650,20 @@ if [ "$START_GATEWAY" = "1" ]; then
   gateway_status="started"
 fi
 hermes gateway status >/tmp/hermes-restore-gateway-status.log 2>&1 || gateway_check_status=$?
+
+UV_PROJECT_ENVIRONMENT="$agent_dir/venv" uv run --frozen --python 3.11 \
+  "$agent_dir/scripts/audit_hermes_backup.py" \
+  --live-home "$HERMES_HOME" \
+  --backup-dir "$backup_dir" \
+  --report /tmp/hermes-restore-backup-audit.json \
+  --fail-on-untracked-state-db \
+  --fail-on-state-legacy-gaps \
+  --max-extra-jsonl 0 \
+  --max-extra-index 0 \
+  >/tmp/hermes-restore-backup-audit.log 2>&1 || backup_audit_status=$?
+if [ ! -s /tmp/hermes-restore-backup-audit.json ]; then
+  printf '{}\n' >/tmp/hermes-restore-backup-audit.json
+fi
 
 backup_scheduler_status="skipped"
 backup_scheduler_plist=""
@@ -713,6 +728,17 @@ if [ "$obsidian_skipped" = "True" ] || [ "$obsidian_skipped" = "true" ]; then
 elif [ -z "$obsidian_skipped" ] || [ "$obsidian_skipped" = "False" ] || [ "$obsidian_skipped" = "false" ]; then
   obsidian_skipped="0"
 fi
+backup_audit_json="$(cat /tmp/hermes-restore-backup-audit.json)"
+backup_audit_missing_jsonl="$(printf '%s\n' "$backup_audit_json" | json_field missing_jsonl_count)"
+backup_audit_extra_jsonl="$(printf '%s\n' "$backup_audit_json" | json_field extra_jsonl_count)"
+backup_audit_missing_index="$(printf '%s\n' "$backup_audit_json" | json_field missing_sessions_json_entries)"
+backup_audit_extra_index="$(printf '%s\n' "$backup_audit_json" | json_field extra_sessions_json_entries)"
+backup_audit_message_drift="$(printf '%s\n' "$backup_audit_json" | json_field backup_jsonl_message_drift_count)"
+backup_audit_live_jsonl_mismatch="$(printf '%s\n' "$backup_audit_json" | json_field live_jsonl_message_mismatch_count)"
+backup_audit_live_state_legacy_gaps="$(printf '%s\n' "$backup_audit_json" | json_field live_state_sessions_without_legacy_files)"
+backup_audit_live_message_without_jsonl="$(printf '%s\n' "$backup_audit_json" | json_field live_message_sessions_without_jsonl)"
+backup_audit_backup_state_db_size="$(printf '%s\n' "$backup_audit_json" | json_field backup_state_db_size_bytes)"
+backup_audit_backup_state_db_tracked="$(printf '%s\n' "$backup_audit_json" | json_field backup_state_db_tracked)"
 
 report="${REPORT_PATH:-$HERMES_HOME/restore-report-${stamp}.json}"
 mkdir -p "$(dirname "$report")"
@@ -736,6 +762,7 @@ cat >"$report" <<EOF
   "cron_status": $cron_status,
   "gateway_check_status": $gateway_check_status,
   "smoke_status": $smoke_status,
+  "backup_audit_status": $backup_audit_status,
   "smoke_output": "$(json_escape "$smoke_output")",
   "session_count_before_rebuild": "$session_count_before",
   "session_count_after_rebuild": "$session_count_after",
@@ -773,7 +800,17 @@ cat >"$report" <<EOF
   "backup_scheduler_status": "$(json_escape "$backup_scheduler_status")",
   "backup_scheduler_plist": "$(json_escape "$backup_scheduler_plist")",
   "backup_scheduler_interval_seconds": "$(json_escape "$BACKUP_SCHEDULER_INTERVAL")",
-  "restore_drill_min_interval_seconds": "$(json_escape "$RESTORE_DRILL_MIN_INTERVAL_SECONDS")"
+  "restore_drill_min_interval_seconds": "$(json_escape "$RESTORE_DRILL_MIN_INTERVAL_SECONDS")",
+  "backup_audit_missing_jsonl_count": "${backup_audit_missing_jsonl:-}",
+  "backup_audit_extra_jsonl_count": "${backup_audit_extra_jsonl:-}",
+  "backup_audit_missing_sessions_json_entries": "${backup_audit_missing_index:-}",
+  "backup_audit_extra_sessions_json_entries": "${backup_audit_extra_index:-}",
+  "backup_audit_jsonl_message_drift_count": "${backup_audit_message_drift:-}",
+  "backup_audit_live_jsonl_message_mismatch_count": "${backup_audit_live_jsonl_mismatch:-}",
+  "backup_audit_live_state_sessions_without_legacy_files": "${backup_audit_live_state_legacy_gaps:-}",
+  "backup_audit_live_message_sessions_without_jsonl": "${backup_audit_live_message_without_jsonl:-}",
+  "backup_state_db_size_bytes": "${backup_audit_backup_state_db_size:-}",
+  "backup_state_db_tracked": "$(json_escape "$backup_audit_backup_state_db_tracked")"
 }
 EOF
 

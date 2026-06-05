@@ -125,6 +125,8 @@ if report.get("status_status") != 0:
     errors.append(f"status_status={report.get('status_status')}")
 if report.get("cron_status") != 0:
     errors.append(f"cron_status={report.get('cron_status')}")
+if report.get("backup_audit_status") != 0:
+    errors.append(f"backup_audit_status={report.get('backup_audit_status')}")
 try:
     sessions = int(report.get("session_count") or 0)
 except ValueError:
@@ -186,6 +188,22 @@ if report.get("smoke_output") != "skipped":
     errors.append(f"smoke_output={report.get('smoke_output')!r}")
 if report.get("backup_state_db_size_bytes"):
     errors.append(f"backup_state_db_size_bytes={report.get('backup_state_db_size_bytes')!r}")
+for key in (
+    "backup_audit_missing_jsonl_count",
+    "backup_audit_extra_jsonl_count",
+    "backup_audit_missing_sessions_json_entries",
+    "backup_audit_extra_sessions_json_entries",
+    "backup_audit_jsonl_message_drift_count",
+    "backup_audit_live_jsonl_message_mismatch_count",
+    "backup_audit_live_state_sessions_without_legacy_files",
+    "backup_audit_live_message_sessions_without_jsonl",
+):
+    try:
+        count = int(report.get(key) or 0)
+    except ValueError:
+        count = -1
+    if count != 0:
+        errors.append(f"{key}={report.get(key)!r}")
 for key in ("agent_commit", "backup_commit", "beads_commit"):
     if not report.get(key):
         errors.append(f"{key}=missing")
