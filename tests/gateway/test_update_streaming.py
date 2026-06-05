@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
+from gateway.config import GatewayConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 
@@ -38,6 +39,7 @@ def _make_runner(hermes_home=None):
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
+    runner.config = GatewayConfig()
     runner._voice_mode = {}
     runner._update_prompt_pending = {}
     runner._running_agents = {}
