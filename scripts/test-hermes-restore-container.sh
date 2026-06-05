@@ -112,7 +112,7 @@ cp -a /work/hermes-agent-src /tmp/hermes-agent
   --skip-smoke \
   --report "$HERMES_RESTORE_CONTAINER_REPORT"
 cd /tmp/hermes-agent
-uv run --python 3.11 python \
+UV_PROJECT_ENVIRONMENT=/tmp/hermes-agent/venv uv run --frozen --python 3.11 python \
   scripts/validate_hermes_restore_report.py \
   "$HERMES_RESTORE_CONTAINER_REPORT"
 '

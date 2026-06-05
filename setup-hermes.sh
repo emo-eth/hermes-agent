@@ -185,7 +185,7 @@ else
     # fall back to pip install for compatibility or when lockfile is stale.
     if [ -f "uv.lock" ]; then
         echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
-        UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>/dev/null && \
+        UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked 2>/dev/null && \
             echo -e "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
             echo -e "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip install..."
             $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."

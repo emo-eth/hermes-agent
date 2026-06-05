@@ -132,3 +132,11 @@ def test_bootstrap_accepts_restore_token_without_gh_login(tmp_path: Path) -> Non
     assert result.returncode == 0
     assert "Hermes restore bootstrap prerequisites are ready." in result.stdout
     assert "gh auth status should not be called" not in result.stderr
+
+
+def test_setup_uses_locked_all_bundle_not_every_extra() -> None:
+    script = (ROOT / "setup-hermes.sh").read_text(encoding="utf-8")
+
+    assert "uv.lock for hash-verified installation" in script
+    assert "sync --extra all --locked" in script
+    assert "sync --all-extras --locked" not in script

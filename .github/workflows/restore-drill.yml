@@ -17,6 +17,7 @@ on:
       - 'scripts/bootstrap-hermes-restore.sh'
       - 'scripts/test-hermes-restore-container.sh'
       - 'scripts/validate_hermes_restore_report.py'
+      - 'setup-hermes.sh'
       - 'scripts/audit_hermes_backup.py'
       - 'scripts/export_state_sessions_to_legacy.py'
       - 'scripts/normalize_legacy_paths.py'
@@ -31,6 +32,7 @@ on:
       - 'scripts/bootstrap-hermes-restore.sh'
       - 'scripts/test-hermes-restore-container.sh'
       - 'scripts/validate_hermes_restore_report.py'
+      - 'setup-hermes.sh'
       - 'scripts/audit_hermes_backup.py'
       - 'scripts/export_state_sessions_to_legacy.py'
       - 'scripts/normalize_legacy_paths.py'
@@ -76,6 +78,7 @@ jobs:
         working-directory: hermes-agent
         run: |
           bash -n scripts/restore-hermes.sh
+          bash -n setup-hermes.sh
           uv run --frozen --python 3.11 --extra dev pytest \
             tests/test_restore_hermes_script.py \
             tests/test_audit_hermes_backup.py \
