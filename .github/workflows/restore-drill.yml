@@ -146,7 +146,7 @@ jobs:
             echo "No restore report was produced." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          uv run --python 3.11 python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           import os
           from pathlib import Path
@@ -165,6 +165,18 @@ jobs:
           print(f"- missing required cron: `{report.get('missing_required_cron') or 'none'}`")
           print(f"- legacy path files: `{report.get('legacy_hermes_path_file_count')}`")
           print(f"- doctor/status/sessions/cron/gateway: `{report.get('doctor_status')}` / `{report.get('status_status')}` / `{report.get('sessions_status')}` / `{report.get('cron_status')}` / `{report.get('gateway_check_status')}`")
+          print("")
+          print("### Backup Parity Audit")
+          print("")
+          print(f"- audit status: `{report.get('backup_audit_status', 'missing')}`")
+          print(f"- missing/extra JSONL: `{report.get('backup_audit_missing_jsonl_count', 'missing')}` / `{report.get('backup_audit_extra_jsonl_count', 'missing')}`")
+          print(f"- missing/extra sessions.json entries: `{report.get('backup_audit_missing_sessions_json_entries', 'missing')}` / `{report.get('backup_audit_extra_sessions_json_entries', 'missing')}`")
+          print(f"- JSONL message drift: `{report.get('backup_audit_jsonl_message_drift_count', 'missing')}`")
+          print(f"- live JSONL message mismatches: `{report.get('backup_audit_live_jsonl_message_mismatch_count', 'missing')}`")
+          print(f"- state sessions without legacy files: `{report.get('backup_audit_live_state_sessions_without_legacy_files', 'missing')}`")
+          print(f"- message sessions without JSONL: `{report.get('backup_audit_live_message_sessions_without_jsonl', 'missing')}`")
+          print(f"- backup state.db tracked: `{report.get('backup_state_db_tracked', 'missing')}`")
+          print(f"- backup state.db size: `{report.get('backup_state_db_size_bytes', 'missing')}` bytes")
           PY
 
       - name: Upload restore report
