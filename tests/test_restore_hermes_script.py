@@ -1,10 +1,12 @@
 import os
+import stat
 import subprocess
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RESTORE_SCRIPT = ROOT / "scripts" / "restore-hermes.sh"
+BOOTSTRAP_SCRIPT = ROOT / "scripts" / "bootstrap-hermes-restore.sh"
 
 
 def run_detect(home: Path) -> str:
@@ -24,6 +26,11 @@ def write_obsidian_registry(home: Path, content: str) -> None:
     registry = home / "Library" / "Application Support" / "obsidian" / "obsidian.json"
     registry.parent.mkdir(parents=True)
     registry.write_text(content, encoding="utf-8")
+
+
+def write_executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
 def test_detect_obsidian_vault_prefers_documents_sync(tmp_path: Path) -> None:
@@ -90,3 +97,38 @@ def test_restore_report_backup_audit_numeric_fields_default_to_zero() -> None:
     for field in fields:
         line = next(line for line in script.splitlines() if f'"{field}"' in line)
         assert ":-0}" in line
+
+
+def test_bootstrap_accepts_restore_token_without_gh_login(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("git", "rsync", "curl", "uv"):
+        write_executable(bin_dir / name, "#!/usr/bin/env bash\nexit 0\n")
+    write_executable(
+        bin_dir / "gh",
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = auth ] && [ \"${2:-}\" = status ]; then\n"
+        "  echo 'gh auth status should not be called when HERMES_RESTORE_TOKEN is set' >&2\n"
+        "  exit 42\n"
+        "fi\n"
+        "exit 0\n",
+    )
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "HERMES_BOOTSTRAP_NO_INSTALL": "1",
+        "HERMES_RESTORE_TOKEN": "ghp_restore_token",
+    }
+    result = subprocess.run(
+        ["bash", str(BOOTSTRAP_SCRIPT), "--check-only"],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Hermes restore bootstrap prerequisites are ready." in result.stdout
+    assert "gh auth status should not be called" not in result.stderr

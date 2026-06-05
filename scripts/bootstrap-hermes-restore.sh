@@ -21,6 +21,9 @@ Environment:
                              script is not running from a repo checkout.
   HERMES_BOOTSTRAP_NO_INSTALL=1
                              Only check prerequisites; do not install them.
+  HERMES_RESTORE_TOKEN       GitHub token for private restore repos. When set,
+                             it is exported as GH_TOKEN for gh/git operations.
+  GH_TOKEN/GITHUB_TOKEN      Existing GitHub token env vars accepted by gh.
 EOF
 }
 
@@ -161,6 +164,13 @@ ensure_prereqs() {
       ;;
   esac
   install_uv
+  if [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
+    return
+  fi
+  if [ -n "${HERMES_RESTORE_TOKEN:-}" ]; then
+    export GH_TOKEN="$HERMES_RESTORE_TOKEN"
+    return
+  fi
   if ! gh auth status >/dev/null 2>&1; then
     cat >&2 <<'EOF'
 GitHub CLI is installed but not authenticated.

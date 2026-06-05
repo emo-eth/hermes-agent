@@ -489,10 +489,11 @@ The full procedure should become:
 
 The paste-on-a-fresh-machine entrypoint now exists as
 `scripts/bootstrap-hermes-restore.sh`. It checks or installs `git`, `rsync`,
-`curl`, `gh`, and `uv`, verifies `gh auth status`, then delegates to
-`scripts/restore-hermes.sh`. On Linux it handles root or `sudo` shells and
-installs GitHub CLI from GitHub's apt repository when `gh` is not already
-available.
+`curl`, `gh`, and `uv`, accepts GitHub auth from `GH_TOKEN`, `GITHUB_TOKEN`, or
+`HERMES_RESTORE_TOKEN`, falls back to `gh auth status` when no token env var is
+present, then delegates to `scripts/restore-hermes.sh`. On Linux it handles
+root or `sudo` shells and installs GitHub CLI from GitHub's apt repository when
+`gh` is not already available.
 
 From a checked-out runtime repo:
 
@@ -504,6 +505,14 @@ To verify the host is ready without starting a restore:
 
 ```bash
 scripts/bootstrap-hermes-restore.sh --check-only
+```
+
+For a non-interactive fresh-machine restore, export a GitHub token with private
+repo read access before running the bootstrap:
+
+```bash
+export HERMES_RESTORE_TOKEN=...
+scripts/bootstrap-hermes-restore.sh
 ```
 
 Default restore options are:
