@@ -7,7 +7,8 @@
   it was initially at `3aad33520`, then synced from live restored state and
   continues to be pushed by the restored five-minute scheduler.
 - Beads tracker cloned to `/Users/jameswenzel/dev/hermes-beads`.
-- Hermes installed via `./setup-hermes.sh`, which uses `uv` and Python 3.11.
+- Hermes installed via `./setup-hermes.sh`, which uses `uv`, Python 3.11,
+  and the locked `[all]` dependency bundle (`uv sync --extra all --locked`).
 - `~/.hermes` restored from `hermes-workspace-backup`; the pre-restore fresh home is preserved at `~/.hermes.pre-restore-20260604T180507Z`.
 - `state.db` can be rebuilt from legacy session files with
   `scripts/rebuild_legacy_session_db.py`.
@@ -77,7 +78,7 @@
   `.skills_prompt_snapshot.json`; the hook now excludes that volatile file.
   Follow-up scheduled/manual hook runs pushed backup commits including
   `c324936a7`, `341d3eeea`, `a34d1d6b1`, `34029bdc5`, `f617db8e9`, and
-  `1eb939f7c`. Strict audit reports such as
+  `1eb939f7c`. At that checkpoint, strict audit reports such as
   `/tmp/hermes-backup-audit-1eb939f7c.json` pass with 915
   live/backup JSONL transcripts, 712 `sessions.json` entries, 915 live SQLite
   sessions, 50,440 live SQLite messages, no missing legacy session coverage, no
@@ -87,11 +88,11 @@
   and syncing backup commit `4020dd1f3`, a throwaway full host restore from the
   raw backup reconstructed 865 sessions and 49,297 messages. After later
   gateway/test activity, backup commit `aa705ea61` exported the remaining live
-  SQLite-only rows; the latest container restore rebuilds 908 sessions and
-  49,505 messages, matching the latest strict live/backup audit.
+  SQLite-only rows; a later container restore rebuilt 908 sessions and
+  49,505 messages, matching the strict live/backup audit at that checkpoint.
 - `scripts/audit_hermes_backup.py --fail-on-state-legacy-gaps
-  --fail-on-untracked-state-db` now verifies that live and backup have 908 JSONL
-  transcripts, 705 `sessions.json` entries, no missing files, no JSONL message
+  --fail-on-untracked-state-db` now verifies that live and backup have no
+  missing files, no missing or extra `sessions.json` entries, no JSONL message
   drift, no live DB sessions without legacy representation, no message-bearing
   DB sessions without JSONL, and no tracked/untracked backup `state.db`.
 - `hermes -z 'Smoke test...' --ignore-rules` returned the expected response.
@@ -112,13 +113,18 @@
   normalizes restored backup-hook agent checkout paths to the chosen
   `--agent-dir`/`--repos-dir` checkout.
 - `scripts/test-hermes-restore-container.sh` passed again in a clean `debian:13.4`
-  container against backup commit `e60f7749d`. It restored into
-  `/tmp/hermes-home`, rebuilt 915 sessions and 50,440 messages, ran `hermes doctor`, `hermes status`, `hermes sessions
-  stats`, `hermes cron list`, and `hermes gateway status` with status 0, and
-  validated the machine-readable restore report. Latest report:
-  `/tmp/hermes-restore-report-with-commits.json`, timestamp
-  `20260604T232353Z`, with exact agent, backup, and beads commit SHAs embedded.
-  The restore report correctly shows
+  container against backup commit `272aaed1c`. It restored into
+  `/tmp/hermes-home`, rebuilt 917 sessions and 50,527 messages, ran `hermes doctor`,
+  `hermes status`, `hermes sessions stats`, `hermes cron list`, and
+  `hermes gateway status` with status 0, validated the machine-readable restore
+  report, and proved the setup path stayed locked by printing
+  `Dependencies installed (lockfile verified)`. Latest full local report:
+  `/tmp/hermes-restore-report-locked-setup.json`, timestamp
+  `20260605T003939Z`, with exact agent, backup, and beads commit SHAs embedded.
+  The full local restore used the same code state later committed as
+  `472571f2a`; the embedded agent SHA is `384d884aa` because the container was
+  run before that final commit was made. GitHub CI then passed `restore-drill`
+  and `uv lock --check` on `472571f2a`. The restore report correctly shows
   `backup_scheduler_status: skipped` because this was a temp/container restore
   to `/tmp/hermes-home`, not a real macOS restore to `$HOME/.hermes`.
 
@@ -214,6 +220,20 @@
     `uv run --frozen --python 3.11 --extra all --extra dev pytest ...` and noted
     on PR #5.
 
+10b. The restore setup dependency path used to be less reproducible than the
+    restore drill assumed.
+    The earlier `setup-hermes.sh` locked path used `uv sync --all-extras --locked`,
+    which pulled every optional extra, including platform-sensitive packages
+    outside the intended restore bundle. The lockfile also carried stale
+    metadata, so a clean setup could fall back to an unlocked install. This is
+    now fixed by regenerating `uv.lock`, switching setup to
+    `uv sync --extra all --locked`, adding a regression test for that exact
+    command, and making `setup-hermes.sh` a restore-drill workflow trigger plus
+    shell-syntax target. Remaining risk: the fallback still exists for
+    compatibility, but CI now runs `uv lock --check`, the restore drill
+    exercises setup in a clean container, and the local locked restore printed
+    `Dependencies installed (lockfile verified)`.
+
 11. Backup freshness is not continuous.
     The backup repo at `3aad33520` was stale relative to the live restored
     agent on this machine: it was missing 12 June 4 JSONL transcripts and 10
@@ -237,12 +257,14 @@
 
 12. Raw-backup parity is now proven for sessions/messages, but not every runtime
     surface is one-click proven.
-    Strict audits of scheduled backup commits prove raw-backup parity for 915
-    sessions and 50,440 live SQLite messages at audit time. The latest clean container
-    restore proves 915 sessions and 50,440 messages from the raw backup snapshot
-    at commit `e60f7749d` that it mounted. Remaining unproven surfaces are CI execution with private repo
-    token, live Discord gateway startup with user-provided credentials, and a
-    full OAuth/provider credential bootstrap on a brand-new machine.
+    Strict audits of scheduled backup commits prove raw-backup parity for 917
+    sessions and 50,527 live SQLite messages at audit time. The latest clean
+    container restore proves 917 sessions and 50,527 messages from the raw
+    backup snapshot at commit `272aaed1c` that it mounted, with all embedded
+    parity fields at zero and no tracked/untracked backup `state.db`.
+    Remaining unproven surfaces are CI execution with private repo token, live
+    Discord gateway startup with user-provided credentials, and a full
+    OAuth/provider credential bootstrap on a brand-new machine.
 
 ## Proposed Robustness Test
 
@@ -261,8 +283,11 @@ check out:
 - `emo-eth/hermes-beads`
 
 Then it runs `scripts/test-hermes-restore-container.sh` with `--report` and
-uploads `hermes-restore-report.json` as a workflow artifact. Before the private
-backup token gate, it also runs
+uploads `hermes-restore-report.json` as a workflow artifact. The container
+drill runs setup from a clean checkout, validates the restore report with
+`scripts/validate_hermes_restore_report.py`, and the workflow summary prints
+the embedded backup parity fields so failures are diagnosable from the Actions
+page. Before the private backup token gate, it also runs
 `scripts/bootstrap-hermes-restore.sh --check-only` with `GH_TOKEN` from the
 workflow token so bootstrap regressions are caught even when the private restore
 secret is missing. Pull requests without the private token stop after that
@@ -322,18 +347,21 @@ scripts/test-hermes-restore-container.sh \
 Latest local container result:
 
 - container image: `debian:13.4`
-- report timestamp: `20260604T232353Z`
-- report: `/tmp/hermes-restore-report-with-commits.json`
-- agent commit: `0e59a2d6ea0fa822ba1ba82461e4dc3d2951fdab`
-- backup commit: `e60f7749dc42a7b944967e02f0154f67e1395ed3`
+- report timestamp: `20260605T003939Z`
+- report: `/tmp/hermes-restore-report-locked-setup.json`
+- agent commit embedded in report: `384d884aa6b63fea730b4853cce48d4b28a88859`
+- PR head after committing the verified setup fix: `472571f2a`
+- backup commit: `272aaed1c5d1225d8298a4c3a579f6a8d13b26ca`
 - beads commit: `86d4cdc140ca76922000c9afe025aaf06a16aa86`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
 - `cron_status`: 0
 - `gateway_check_status`: 0
-- `session_count`: 915
-- `message_count`: 50,440
+- setup dependency path: `Dependencies installed (lockfile verified)`
+- `backup_audit_status`: 0
+- `session_count`: 917
+- `message_count`: 50,527
 - cron jobs: 37 active, 38 total
 - required cron jobs missing: none
 - required restore env vars: `DISCORD_BOT_TOKEN,DISCORD_ALLOWED_USERS`
@@ -345,6 +373,15 @@ Latest local container result:
 - restored `/Users/emo/.hermes` replacements: 461 across 31 active files
 - restored legacy agent-dir replacements: 1
 - active legacy agent-dir paths after normalize: 0
+- backup audit missing JSONL files: 0
+- backup audit extra JSONL files: 0
+- backup audit missing `sessions.json` entries: 0
+- backup audit extra `sessions.json` entries: 0
+- backup audit JSONL message drift: 0
+- live JSONL message mismatches against `state.db`: 0
+- live DB sessions without legacy representation: 0
+- live message-bearing DB sessions without JSONL: 0
+- backup `state.db`: absent and not tracked, by design
 - Obsidian vault path normalization: skipped in clean container because no host
   Obsidian vault is mounted and no `--obsidian-vault` override was passed. On
   this Mac, Obsidian's app registry lists a single open vault at
@@ -354,24 +391,27 @@ Latest local container result:
 - gateway: status command works, but the service is not started by this drill
 - backup scheduler: skipped, because the drill restores to `/tmp/hermes-home`
   rather than a real macOS `$HOME/.hermes`
-- host report export: `/tmp/hermes-restore-report-with-commits.json` was
+- host report export: `/tmp/hermes-restore-report-locked-setup.json` was
   written and parsed successfully
 
 Strict backup audit after scheduler sync:
 
-- audited backup commits: `1eb939f7c`, `0767d1bc6`, `e60f7749d`
+- audited backup commits include `1eb939f7c`, `0767d1bc6`, `e60f7749d`, and
+  `272aaed1c`
 - strict audit reports: `/tmp/hermes-backup-audit-1eb939f7c.json`,
   `/tmp/hermes-backup-audit-0767d1bc6.json`,
-  `/tmp/hermes-backup-audit-e60f7749.json`
-- latest container restore report: `/tmp/hermes-restore-report-with-commits.json`
+  `/tmp/hermes-backup-audit-e60f7749.json`, plus the strict backup audit
+  embedded in `/tmp/hermes-restore-report-locked-setup.json`
+- latest container restore report: `/tmp/hermes-restore-report-locked-setup.json`
 - `doctor_status`: 0
 - `status_status`: 0
 - `sessions_status`: 0
 - `cron_status`: 0
 - `gateway_check_status`: 0
 - `smoke_status`: 0, skipped intentionally for no-LLM restore verification
-- `session_count`: 915
-- `message_count`: 50,440 in both the latest container restore and latest
+- `backup_audit_status`: 0
+- `session_count`: 917
+- `message_count`: 50,527 in both the latest container restore and latest
   strict audit
 - real restored `session_meta` DB messages: 13
 - cron jobs: 37 active, 38 total
@@ -383,10 +423,12 @@ Strict backup audit after scheduler sync:
 - active legacy backup-runtime paths after normalize: 0
 - active legacy agent-dir paths after normalize: 0
 - active legacy Obsidian paths after normalize: 0
-- live/backup JSONL transcript count: 915/915
-- live/backup `sessions.json` entry count: 712/712
+- live/backup JSONL transcript count: 917/917
+- live/backup `sessions.json` entry parity: no missing or extra entries
 - missing backup JSONL files: 0
 - missing backup `sessions.json` entries: 0
+- extra backup JSONL files: 0
+- extra backup `sessions.json` entries: 0
 - live JSONL message mismatches against `state.db`: 0
 - backup JSONL message drift from live JSONL: 0
 - live message-bearing DB sessions without JSONL: 0
@@ -466,14 +508,19 @@ The full procedure should become:
    - require secrets via `.env` paste or mounted secret file
    - prompt for missing required env vars when `--prompt-missing-env` is passed
    - rebuild `state.db` from legacy transcripts if `sessions` table is empty
+   - install dependencies from the lockfile with `uv sync --extra all --locked`
+     and fail the drill if the locked path regresses
 
 5. Run gates:
+   - `uv lock --check`
+   - clean setup must report `Dependencies installed (lockfile verified)`
    - `hermes doctor`
    - `hermes status`
    - `hermes sessions stats` must be nonzero
    - `hermes cron list` must include required parity jobs
    - `hermes -z 'reply HERMES_SMOKE_OK' --ignore-rules`
    - `hermes gateway status` must report installed/runnable state, or foreground `timeout 20 hermes gateway run` must reach platform initialization without config errors
+   - `scripts/validate_hermes_restore_report.py restore-report.json`
 
 6. Emit a machine-readable report:
    `restore-report.json` with pass/fail, exact agent/backup/beads commit SHAs,
