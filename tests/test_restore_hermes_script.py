@@ -71,3 +71,22 @@ def test_detect_obsidian_vault_from_compact_registry(tmp_path: Path) -> None:
     )
 
     assert run_detect(tmp_path) == str(vault)
+
+
+def test_restore_report_backup_audit_numeric_fields_default_to_zero() -> None:
+    script = RESTORE_SCRIPT.read_text(encoding="utf-8")
+    fields = [
+        "backup_audit_missing_jsonl_count",
+        "backup_audit_extra_jsonl_count",
+        "backup_audit_missing_sessions_json_entries",
+        "backup_audit_extra_sessions_json_entries",
+        "backup_audit_jsonl_message_drift_count",
+        "backup_audit_live_jsonl_message_mismatch_count",
+        "backup_audit_live_state_sessions_without_legacy_files",
+        "backup_audit_live_message_sessions_without_jsonl",
+        "backup_state_db_size_bytes",
+    ]
+
+    for field in fields:
+        line = next(line for line in script.splitlines() if f'"{field}"' in line)
+        assert ":-0}" in line
