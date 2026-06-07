@@ -157,8 +157,9 @@ class TestHandleVisionAnalyzeFastPath:
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("openrouter", "anthropic/claude-opus-4.6")
         try:
-            coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
-            result = asyncio.get_event_loop().run_until_complete(coro)
+            with patch("agent.image_routing.decide_image_input_mode", return_value="native"):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
         finally:
             clear_runtime_main()
 
