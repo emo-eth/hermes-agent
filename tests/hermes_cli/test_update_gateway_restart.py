@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import builtins
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -1066,8 +1067,33 @@ class TestGetServicePids:
 class TestFindGatewayPidsExclude:
     """find_gateway_pids respects exclude_pids."""
 
+    def test_ps_fallback_runs_when_proc_scan_finds_no_gateway(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", lambda path: path == "/proc")
+        monkeypatch.setattr(gateway_cli.os, "listdir", lambda path: ["42"] if path == "/proc" else [])
+
+        def fake_open(*args, **kwargs):
+            raise PermissionError
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="200 python gateway/run.py\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("os.getpid", lambda: 999)
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert pids == [200]
+
     def test_excludes_specified_pids(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", lambda path: False)
 
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(
