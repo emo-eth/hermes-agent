@@ -215,6 +215,9 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._show_reasoning = False
 
     runner._is_user_authorized = lambda _source: True
+    # These e2e tests exercise command execution, not the interactive
+    # destructive-slash confirmation flow (covered separately).
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": False}}
     runner._set_session_env = lambda _context: None
     runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
