@@ -41,6 +41,7 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 AUTHOR_MAP = {
     # manual overrides
     "emodoteth@gmail.com": "emo-eth",
+    "wenzel.james.r@gmail.com": "emo-eth",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "0x.badfriend@gmail.com": "discodirector",
