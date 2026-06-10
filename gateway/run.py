@@ -933,6 +933,38 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+_ACTION_NOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bmake\s+sure\b", re.IGNORECASE),
+    re.compile(r"\b(?:please|pls)\b", re.IGNORECASE),
+    re.compile(r"\b(?:need|needs|needed|should|must)\b", re.IGNORECASE),
+    re.compile(r"\b(?:todo|action\s*item|follow\s*up)\b", re.IGNORECASE),
+    re.compile(r"\b(?:install|verify|check|create|update|fix|file|track|remember)\b", re.IGNORECASE),
+)
+
+
+def _extract_context_action_note(text: str | None) -> str | None:
+    """Return a short action-ish user note attached to context media.
+
+    Share-sheet/document payloads can carry the user's actual instruction in
+    ``event.text`` while the gateway silently prepends document context for the
+    agent.  When that note is action-shaped, surface it explicitly so the model
+    and the user can both see that it is part of the task, not background fog.
+    """
+    note = (text or "").strip()
+    if not note:
+        return None
+    if not any(pattern.search(note) for pattern in _ACTION_NOTE_PATTERNS):
+        return None
+    return re.sub(r"\s+", " ", note)[:280]
+
+
+def _context_action_receipt(display_name: str, action_note: str) -> str:
+    return (
+        f"✅ Action item noted from context `{display_name}`: {action_note}\n"
+        "I'll explicitly account for it in the final reply."
+    )
+
+
 def _teams_pipeline_plugin_enabled() -> bool:
     """Return True when the standalone Teams pipeline plugin is enabled."""
     config = _load_gateway_config()
@@ -6712,6 +6744,7 @@ class GatewayRunner:
         """
         history = history or []
         message_text = event.text or ""
+        original_user_text = message_text
         _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
         # Use the same helper every other call site uses so the write key here
@@ -6803,6 +6836,8 @@ class GatewayRunner:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
+            action_note = _extract_context_action_note(original_user_text)
+            action_receipt_sent = False
             _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
@@ -6839,6 +6874,29 @@ class GatewayRunner:
                         f"The file is saved at: {agent_path}. "
                         f"Ask the user what they'd like you to do with it.]"
                     )
+
+                if action_note:
+                    context_note = (
+                        f"{context_note}\n"
+                        f"[Action item from the user's accompanying note: {action_note}. "
+                        "You must explicitly account for this action item in the final reply.]"
+                    )
+                    if not action_receipt_sent:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            try:
+                                await adapter.send(
+                                    source.chat_id,
+                                    _context_action_receipt(display_name, action_note),
+                                    metadata=self._thread_metadata_for_source(
+                                        source,
+                                        self._reply_anchor_for_event(event),
+                                    ),
+                                )
+                                action_receipt_sent = True
+                            except Exception as exc:
+                                logger.debug("Context action-note receipt failed: %s", exc)
+
                 message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
