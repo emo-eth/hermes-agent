@@ -38,6 +38,8 @@ def build_codex_auth_watchdog_packet(*, now: Optional[float] = None) -> dict[str
         "alert": alert,
         "alert_reason": "codex_auth_degraded" if alert else None,
         "operator_next_action": _operator_next_action(issue_list) if alert else None,
+        "operator_runbook": _operator_runbook(report, issue_list) if alert else None,
+        "fallback_lane": _fallback_lane(report),
         "report": report,
     }
 
@@ -60,7 +62,56 @@ def build_watchdog_internal_failure_packet(error: BaseException) -> dict[str, An
 
 def _safe_error_message(error: BaseException) -> str:
     message = str(error).replace(str(Path.home()), "~")
+    if "/" in message:
+        message = "path redacted"
     return message[:240]
+
+
+def _fallback_lane(report: dict[str, Any]) -> dict[str, Any]:
+    """Describe whether standalone Codex CLI auth is a candidate rescue lane.
+
+    This does not execute the Codex CLI, so it deliberately does not claim a
+    proven fallback. It only reports whether the CLI auth store looks ready for
+    a follow-up live smoke.
+    """
+    cli_store = report.get("codex_cli_auth_store") if isinstance(report, dict) else {}
+    cli_store = cli_store if isinstance(cli_store, dict) else {}
+    access = cli_store.get("access_token") if isinstance(cli_store, dict) else {}
+    access = access if isinstance(access, dict) else {}
+    auth_store_ready = bool(
+        cli_store.get("path_exists")
+        and access.get("present")
+        and access.get("jwt_claims_decodable")
+        and not access.get("expiring")
+        and cli_store.get("refresh_token_present")
+    )
+    return {
+        "name": "standalone-codex-cli",
+        "available": False,
+        "auth_store_ready": auth_store_ready,
+        "operator_action": (
+            "Standalone Codex CLI auth store looks ready; run a live Codex CLI smoke before using it as a temporary rescue lane."
+            if auth_store_ready
+            else "Standalone Codex CLI auth is not a candidate fallback; repair CLI auth before treating it as a rescue lane."
+        ),
+    }
+
+
+def _operator_runbook(report: dict[str, Any], issues: list[str]) -> dict[str, Any]:
+    """Return structured operator guidance without secrets or local-only paths."""
+    fallback = _fallback_lane(report)
+    repair_steps = [_operator_next_action(issues)]
+    if fallback["auth_store_ready"]:
+        repair_steps.append("Run a live standalone Codex CLI smoke; only then use it to keep urgent work moving while Hermes auth is repaired.")
+    else:
+        repair_steps.append("Do not assume the standalone Codex CLI can rescue this incident; its auth is missing, expiring, malformed, or incomplete.")
+    repair_steps.append("Rerun `python -m agent.codex_auth_watchdog` and require status=healthy before closing the incident.")
+    return {
+        "severity": "blocking_candidate_fallback" if fallback["auth_store_ready"] else "blocking",
+        "repair_steps": repair_steps,
+        "fallback_available": fallback["available"],
+        "fallback_auth_store_ready": fallback["auth_store_ready"],
+    }
 
 
 def _operator_next_action(issues: list[str]) -> str:

@@ -53,6 +53,9 @@ def test_watchdog_writes_secret_free_healthy_packet_and_exits_zero(tmp_path, mon
     assert packet["watchdog"] == "codex-auth-no-stranding"
     assert packet["status"] == "healthy"
     assert packet["alert"] is False
+    assert packet["fallback_lane"]["available"] is False
+    assert packet["fallback_lane"]["auth_store_ready"] is True
+    assert packet["operator_runbook"] is None
     serialized = json.dumps(packet)
     assert access not in serialized
     assert refresh not in serialized
@@ -77,8 +80,31 @@ def test_watchdog_degraded_packet_exits_two_with_operator_action(tmp_path, monke
     assert packet["alert"] is True
     assert packet["alert_reason"] == "codex_auth_degraded"
     assert "hermes auth login openai-codex" in packet["operator_next_action"]
+    assert packet["operator_runbook"]["severity"] == "blocking_candidate_fallback"
+    assert packet["operator_runbook"]["fallback_available"] is False
+    assert packet["operator_runbook"]["fallback_auth_store_ready"] is True
+    assert any("live standalone Codex CLI smoke" in step for step in packet["operator_runbook"]["repair_steps"])
+    assert packet["fallback_lane"]["available"] is False
+    assert packet["fallback_lane"]["auth_store_ready"] is True
     assert "missing_hermes_access_token" in packet["report"]["issues"]
     assert "cli-refresh-secret" not in json.dumps(packet)
+
+
+def test_watchdog_blocks_fallback_when_codex_cli_auth_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex"))
+    _write_hermes_auth(tmp_path, {"version": 1, "providers": {"openai-codex": {"tokens": {}}}})
+
+    from agent.codex_auth_watchdog import run_codex_auth_watchdog
+
+    output = io.StringIO()
+    exit_code = run_codex_auth_watchdog(state_path=tmp_path / "state.json", now=1_800_000_000, output=output)
+
+    packet = json.loads(output.getvalue())
+    assert exit_code == 2
+    assert packet["fallback_lane"]["available"] is False
+    assert packet["operator_runbook"]["severity"] == "blocking"
+    assert any("Do not assume" in step for step in packet["operator_runbook"]["repair_steps"])
 
 
 def test_watchdog_normalizes_inconsistent_healthy_report(monkeypatch):
