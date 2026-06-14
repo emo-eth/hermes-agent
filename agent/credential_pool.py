@@ -777,9 +777,9 @@ class CredentialPool:
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
-            # For nous: another process may have consumed the refresh token
-            # between our proactive sync and the HTTP call.  Re-sync from
-            # auth.json and adopt the fresh tokens if available.
+            # For OAuth providers backed by auth.json, another process may
+            # have consumed the refresh token before/during the HTTP call.
+            # Re-sync from auth.json and adopt fresh tokens if available.
             if self.provider == "nous":
                 synced = self._sync_nous_entry_from_auth_store(entry)
                 if synced.refresh_token != entry.refresh_token:
@@ -796,6 +796,22 @@ class CredentialPool:
                     self._replace_entry(synced, updated)
                     self._persist()
                     self._sync_device_code_entry_to_auth_store(updated)
+                    return updated
+            if self.provider == "openai-codex":
+                synced = self._sync_codex_entry_from_auth_store(entry)
+                if synced.refresh_token != entry.refresh_token or synced.access_token != entry.access_token:
+                    logger.debug("Codex refresh failed but auth.json has newer tokens — adopting")
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
                     return updated
             self._mark_exhausted(entry, None)
             return None

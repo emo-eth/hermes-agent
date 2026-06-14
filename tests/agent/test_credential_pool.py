@@ -1641,3 +1641,40 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     # still skips it.
     available = pool._available_entries(clear_expired=True, refresh=False)
     assert available == []
+
+
+def test_codex_refresh_failure_adopts_newer_auth_store_tokens(tmp_path, monkeypatch):
+    """If Codex refresh fails because another process consumed the refresh token,
+    adopt the newer auth.json token pair instead of exhausting the pool entry.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent import credential_pool as credential_pool_mod
+    from agent.credential_pool import load_pool, STATUS_OK
+
+    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    # Another Hermes process refreshed successfully after this pool entry loaded.
+    _write_auth_store(tmp_path, _codex_auth_store("access-FRESH", "refresh-FRESH"))
+
+    def fail_refresh(access_token, refresh_token):
+        assert access_token == "access-OLD"
+        assert refresh_token == "refresh-OLD"
+        raise RuntimeError("invalid_grant: refresh token already used")
+
+    monkeypatch.setattr(
+        credential_pool_mod.auth_mod,
+        "refresh_codex_oauth_pure",
+        fail_refresh,
+    )
+
+    recovered = pool._refresh_entry(entry, force=True)
+
+    assert recovered is not None
+    assert recovered.access_token == "access-FRESH"
+    assert recovered.refresh_token == "refresh-FRESH"
+    assert recovered.last_status == STATUS_OK
+    assert recovered.last_error_code is None
+    assert recovered.last_error_message is None
