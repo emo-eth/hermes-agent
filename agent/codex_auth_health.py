@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -133,7 +134,7 @@ def build_codex_auth_health_report(*, now: Optional[float] = None) -> Dict[str, 
             "present": bool(codex_tokens),
             "access_token": hermes_summary,
             "refresh_token_present": bool(hermes_refresh),
-            "last_refresh": codex_state.get("last_refresh") if isinstance(codex_state, dict) else None,
+            "last_refresh": _safe_timestamp(codex_state.get("last_refresh") if isinstance(codex_state, dict) else None),
         },
         "codex_cli_auth_store": {
             "path_exists": _codex_cli_auth_path().is_file(),
@@ -149,6 +150,17 @@ def build_codex_auth_health_report(*, now: Optional[float] = None) -> Dict[str, 
             ),
         },
     }
+
+
+def _safe_timestamp(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z", raw):
+        return raw
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{2}:\d{2}", raw):
+        return raw
+    return "redacted_non_timestamp"
 
 
 def _safe_exhaustion_reason(entry: Dict[str, Any]) -> str:

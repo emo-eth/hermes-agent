@@ -212,3 +212,31 @@ def test_codex_auth_health_report_flags_expiring_codex_cli_token(tmp_path, monke
 
     assert report["status"] == "degraded"
     assert "codex_cli_access_token_expiring" in report["issues"]
+
+
+def test_codex_auth_health_report_redacts_non_timestamp_last_refresh(tmp_path, monkeypatch):
+    now = 1_800_000_000
+    access = _jwt(exp=now + 3600)
+    secret_last_refresh = "refresh failed with token sk-sec...alue"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    _write_hermes_auth(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": access, "refresh_token": "shared-refresh"},
+                    "last_refresh": secret_last_refresh,
+                }
+            },
+        },
+    )
+    _write_codex_cli_auth(tmp_path, {"access_token": access, "refresh_token": "shared-refresh"})
+
+    from agent.codex_auth_health import build_codex_auth_health_report
+
+    report = build_codex_auth_health_report(now=now)
+
+    assert report["hermes_auth_store"]["last_refresh"] == "redacted_non_timestamp"
+    assert secret_last_refresh not in json.dumps(report)
