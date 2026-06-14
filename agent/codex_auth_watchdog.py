@@ -88,7 +88,7 @@ def run_codex_auth_watchdog(
     encoded = json.dumps(packet, indent=2, sort_keys=True)
     output.write(encoded + "\n")
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(encoded + "\n")
+    state_path.write_text(encoded + "\n", encoding="utf-8")
     return 2 if packet["alert"] else 0
 
 
