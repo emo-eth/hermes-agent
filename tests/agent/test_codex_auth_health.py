@@ -141,3 +141,74 @@ def test_codex_auth_health_report_flags_expiring_or_missing_tokens(tmp_path, mon
     assert "missing_hermes_refresh_token" in report["issues"]
     assert "missing_codex_cli_access_token" in report["issues"]
     assert report["codex_cli_auth_store"]["path_exists"] is False
+
+
+def test_codex_auth_health_report_flags_malformed_tokens_and_redacts_error_reasons(tmp_path, monkeypatch):
+    now = 1_800_000_000
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    _write_hermes_auth(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "not-a-jwt-secret-token", "refresh_token": "shared-refresh"},
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "pool-1",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "not-a-jwt-secret-token",
+                        "refresh_token": "shared-refresh",
+                        "last_status": "exhausted",
+                        "last_error_reason": "token leaked ***",
+                    }
+                ]
+            },
+        },
+    )
+    _write_codex_cli_auth(tmp_path, {"access_token": "not-a-jwt-secret-token", "refresh_token": "shared-refresh"})
+
+    from agent.codex_auth_health import build_codex_auth_health_report
+
+    report = build_codex_auth_health_report(now=now)
+
+    assert report["status"] == "degraded"
+    assert "hermes_access_token_not_decodable" in report["issues"]
+    assert "codex_cli_access_token_not_decodable" in report["issues"]
+    assert report["credential_pool"]["exhausted_reasons"] == ["unknown"]
+    serialized = json.dumps(report)
+    assert "not-a-jwt-secret-token" not in serialized
+    assert "***" not in serialized
+
+
+def test_codex_auth_health_report_flags_expiring_codex_cli_token(tmp_path, monkeypatch):
+    now = 1_800_000_000
+    hermes_access = _jwt(exp=now + 3600)
+    cli_access = _jwt(exp=now + 30)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    _write_hermes_auth(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": hermes_access, "refresh_token": "shared-refresh"},
+                }
+            },
+        },
+    )
+    _write_codex_cli_auth(tmp_path, {"access_token": cli_access, "refresh_token": "shared-refresh"})
+
+    from agent.codex_auth_health import build_codex_auth_health_report
+
+    report = build_codex_auth_health_report(now=now)
+
+    assert report["status"] == "degraded"
+    assert "codex_cli_access_token_expiring" in report["issues"]

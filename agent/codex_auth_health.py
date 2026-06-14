@@ -10,10 +10,18 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    _codex_access_token_is_expiring,
     _decode_jwt_claims,
     _load_auth_store,
 )
+
+
+_SAFE_EXHAUSTION_REASONS = frozenset({
+    "invalid_grant",
+    "unauthorized",
+    "expired",
+    "rate_limited",
+    "quota_exceeded",
+})
 
 
 def _codex_cli_auth_path() -> Path:
@@ -96,12 +104,19 @@ def build_codex_auth_health_report(*, now: Optional[float] = None) -> Dict[str, 
     if not hermes_refresh:
         issues.append("missing_hermes_refresh_token")
     hermes_summary = _token_summary(hermes_access, now=now)
+    cli_summary = _token_summary(cli_access, now=now)
     if hermes_access and hermes_summary.get("expiring"):
         issues.append("hermes_access_token_expiring")
+    if hermes_access and not hermes_summary.get("jwt_claims_decodable"):
+        issues.append("hermes_access_token_not_decodable")
     if not cli_access:
         issues.append("missing_codex_cli_access_token")
     if not cli_refresh:
         issues.append("missing_codex_cli_refresh_token")
+    if cli_access and cli_summary.get("expiring"):
+        issues.append("codex_cli_access_token_expiring")
+    if cli_access and not cli_summary.get("jwt_claims_decodable"):
+        issues.append("codex_cli_access_token_not_decodable")
     if hermes_access and cli_access and hermes_access != cli_access:
         issues.append("hermes_codex_cli_access_token_diverged")
     if hermes_refresh and cli_refresh and hermes_refresh != cli_refresh:
@@ -122,17 +137,27 @@ def build_codex_auth_health_report(*, now: Optional[float] = None) -> Dict[str, 
         },
         "codex_cli_auth_store": {
             "path_exists": _codex_cli_auth_path().is_file(),
-            "access_token": _token_summary(cli_access, now=now),
+            "access_token": cli_summary,
             "refresh_token_present": bool(cli_refresh),
         },
         "credential_pool": {
             "entry_count": len(pool_entries),
             "exhausted_count": len(exhausted_entries),
             "available_count": max(0, len(pool_entries) - len(exhausted_entries)),
-            "exhausted_reasons": sorted({
-                str(entry.get("last_error_reason") or entry.get("last_error_code") or "unknown")
-                for entry in exhausted_entries
-                if isinstance(entry, dict)
-            }),
+            "exhausted_reasons": sorted(
+                _safe_exhaustion_reason(entry) for entry in exhausted_entries if isinstance(entry, dict)
+            ),
         },
     }
+
+
+def _safe_exhaustion_reason(entry: Dict[str, Any]) -> str:
+    reason = str(entry.get("last_error_reason") or "").strip().lower()
+    if reason in _SAFE_EXHAUSTION_REASONS:
+        return reason
+    code = entry.get("last_error_code")
+    if isinstance(code, int):
+        return f"http_{code}"
+    if isinstance(code, str) and code.isdigit():
+        return f"http_{code}"
+    return "unknown"
