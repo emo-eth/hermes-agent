@@ -449,6 +449,10 @@ def get_board(
                 "AND status != 'archived' ORDER BY assignee"
             )
         ]
+        # Rich registry of Hermes profiles plus board-only assignees. Keep the
+        # string list above for compatibility with the existing frontend, and
+        # expose this registry for profile-aware routing/dropdowns.
+        assignee_registry = kanban_db.known_assignees(conn)
 
         return {
             "columns": [
@@ -456,6 +460,7 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "assignee_registry": assignee_registry,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }

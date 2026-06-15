@@ -75,6 +75,8 @@ def test_board_empty(client):
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
     assert data["assignees"] == []
+    assert "assignee_registry" in data
+    assert isinstance(data["assignee_registry"], list)
     assert data["latest_event_id"] == 0
 
 
@@ -83,7 +85,17 @@ def test_board_empty(client):
 # ---------------------------------------------------------------------------
 
 
-def test_create_task_appears_on_board(client):
+def test_create_task_appears_on_board(client, kanban_home):
+    profile_dir = kanban_home / "profiles" / "researcher"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "config.yaml").write_text(
+        "model:\n  default: gpt-test\n  provider: test-provider\n",
+        encoding="utf-8",
+    )
+    (profile_dir / "profile.yaml").write_text(
+        "description: Investigates ambiguous research tasks.\n",
+        encoding="utf-8",
+    )
     r = client.post(
         "/api/plugins/kanban/tasks",
         json={
@@ -111,6 +123,11 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+    registry = {entry["name"]: entry for entry in data["assignee_registry"]}
+    assert registry["researcher"]["description"] == "Investigates ambiguous research tasks."
+    assert registry["researcher"]["model"] == "gpt-test"
+    assert registry["researcher"]["provider"] == "test-provider"
+    assert registry["researcher"]["counts"] == {"ready": 1}
 
 
 def test_tenant_filter(client):
