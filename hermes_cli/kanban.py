@@ -1013,12 +1013,20 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
         print("(no assignees — create a profile with `hermes -p <name> setup`)")
         return 0
     # Header
-    print(f"{'NAME':20s}  {'ON DISK':8s}  COUNTS")
+    print(f"{'NAME':20s}  {'ON DISK':8s}  {'MODEL':24s}  COUNTS")
     for entry in data:
         on_disk = "yes" if entry["on_disk"] else "no"
         counts = entry["counts"] or {}
         count_str = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "(idle)"
-        print(f"{entry['name']:20s}  {on_disk:8s}  {count_str}")
+        model_bits = [str(v) for v in (entry.get("provider"), entry.get("model")) if v]
+        model = "/".join(model_bits) or "—"
+        if len(model) > 24:
+            model = model[:21] + "..."
+        print(f"{entry['name']:20s}  {on_disk:8s}  {model:24s}  {count_str}")
+        description = (entry.get("description") or "").strip()
+        if description:
+            badge = " [auto]" if entry.get("description_auto") else ""
+            print(f"{'':20s}  {'':8s}  {'':24s}  {description}{badge}")
     return 0
 
 

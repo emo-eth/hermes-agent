@@ -1244,7 +1244,15 @@ def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
     for name in ("researcher", "writer"):
         d = profiles / name
         d.mkdir()
-        (d / "config.yaml").write_text("model: {}\n")
+        (d / "config.yaml").write_text(
+            "model:\n  default: gpt-test\n  provider: test-provider\n",
+            encoding="utf-8",
+        )
+    (profiles / "writer" / "profile.yaml").write_text(
+        "description: Writes polished implementation patches.\n"
+        "description_auto: true\n",
+        encoding="utf-8",
+    )
 
     kb.init_db()
     conn = kb.connect()
@@ -1263,11 +1271,26 @@ def test_known_assignees_merges_disk_and_board(tmp_path, monkeypatch):
     assert by_name["researcher"]["counts"] == {}
     assert by_name["writer"]["on_disk"] is True
     assert by_name["writer"]["counts"] == {"ready": 1}
+    assert by_name["writer"]["description"] == "Writes polished implementation patches."
+    assert by_name["writer"]["description_auto"] is True
+    assert by_name["writer"]["model"] == "gpt-test"
+    assert by_name["writer"]["provider"] == "test-provider"
+    assert isinstance(by_name["writer"]["skill_count"], int)
     assert by_name["on_board_only"]["on_disk"] is False
     assert by_name["on_board_only"]["counts"] == {"ready": 1}
+    assert by_name["on_board_only"]["description"] == ""
+    assert by_name["on_board_only"]["model"] is None
 
 
 def test_cli_assignees_json(kanban_home):
+    profiles = Path.home() / ".hermes" / "profiles"
+    described = profiles / "described"
+    described.mkdir(parents=True)
+    (described / "config.yaml").write_text("model:\n  default: gpt-test\n", encoding="utf-8")
+    (described / "profile.yaml").write_text(
+        "description: Routes source-ingest and research tasks.\n",
+        encoding="utf-8",
+    )
     conn = kb.connect()
     try:
         kb.create_task(conn, title="x", assignee="someone")
@@ -1275,8 +1298,10 @@ def test_cli_assignees_json(kanban_home):
         conn.close()
     out = run_slash("assignees --json")
     data = json.loads(out)
-    names = [e["name"] for e in data]
-    assert "someone" in names
+    by_name = {e["name"]: e for e in data}
+    assert "someone" in by_name
+    assert by_name["described"]["description"] == "Routes source-ingest and research tasks."
+    assert by_name["described"]["model"] == "gpt-test"
 
 
 # ---------------------------------------------------------------------------
