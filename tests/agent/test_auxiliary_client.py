@@ -661,7 +661,6 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="portal/recommended-text"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
-            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="google/gemini-3-flash-preview"),
         ):
             from agent.auxiliary_client import _try_nous
 
