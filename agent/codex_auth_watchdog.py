@@ -80,6 +80,8 @@ def _safe_error_message(error: BaseException) -> str:
     message = str(error).replace(str(Path.home()), "~")
     if "/" in message:
         message = "path redacted"
+    if _contains_secret_shape(message):
+        message = "secret-shaped error redacted"
     return message[:240]
 
 
@@ -180,10 +182,12 @@ def run_standalone_codex_smoke(
         }
 
     combined = f"{completed.stdout}\n{completed.stderr}"
+    stdout_lines = [line.strip() for line in completed.stdout.splitlines()]
+    smoke_passed = completed.returncode == 0 and any(line == "OK" for line in stdout_lines)
     if _contains_secret_shape(combined):
         evidence = "output redacted"
-    elif completed.returncode == 0 and "OK" in completed.stdout:
-        evidence = "stdout contained OK"
+    elif smoke_passed:
+        evidence = "stdout line matched OK"
     else:
         evidence = (
             "completed without expected OK"
@@ -191,9 +195,7 @@ def run_standalone_codex_smoke(
             else "command failed"
         )
     return {
-        "status": "passed"
-        if completed.returncode == 0 and "OK" in completed.stdout
-        else "failed",
+        "status": "passed" if smoke_passed else "failed",
         "exit_code": completed.returncode,
         "evidence": evidence,
     }

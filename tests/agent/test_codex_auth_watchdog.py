@@ -138,7 +138,7 @@ def test_watchdog_marks_fallback_available_only_after_live_smoke(tmp_path, monke
         standalone_codex_smoke={
             "status": "passed",
             "exit_code": 0,
-            "evidence": "stdout contained OK",
+            "evidence": "stdout line matched OK",
         },
     )
 
@@ -158,11 +158,36 @@ def test_standalone_codex_smoke_redacts_secret_shaped_output():
     from agent.codex_auth_watchdog import run_standalone_codex_smoke
 
     result = run_standalone_codex_smoke(
-        [sys.executable, "-c", "print('OK access_token should-not-leak')"],
+        [sys.executable, "-c", "import sys; print('OK'); print('access_token should-not-leak', file=sys.stderr)"],
         timeout_seconds=5,
     )
 
     assert result == {"status": "passed", "exit_code": 0, "evidence": "output redacted"}
+
+
+def test_standalone_codex_smoke_requires_exact_ok_line():
+    import sys
+
+    from agent.codex_auth_watchdog import run_standalone_codex_smoke
+
+    result = run_standalone_codex_smoke(
+        [sys.executable, "-c", "print('NOT OK')"],
+        timeout_seconds=5,
+    )
+
+    assert result == {
+        "status": "failed",
+        "exit_code": 0,
+        "evidence": "completed without expected OK",
+    }
+
+
+def test_watchdog_internal_failure_packet_redacts_secret_shaped_error():
+    from agent.codex_auth_watchdog import build_watchdog_internal_failure_packet
+
+    packet = build_watchdog_internal_failure_packet(OSError("sk-secret-token binary missing"))
+
+    assert packet["error"]["message"] == "secret-shaped error redacted"
 
 
 def test_watchdog_blocks_fallback_when_codex_cli_auth_is_missing(tmp_path, monkeypatch):
