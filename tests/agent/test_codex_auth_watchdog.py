@@ -1,0 +1,264 @@
+"""Tests for the Codex auth no-stranding watchdog entrypoint."""
+
+from __future__ import annotations
+
+import base64
+import io
+import json
+
+
+def _jwt(*, exp: int) -> str:
+    header = (
+        base64
+        .urlsafe_b64encode(json.dumps({"alg": "none"}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    payload = (
+        base64
+        .urlsafe_b64encode(json.dumps({"exp": exp}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    return f"{header}.{payload}.sig"
+
+
+def _write_hermes_auth(tmp_path, payload: dict) -> None:
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
+
+
+def _write_codex_cli_auth(tmp_path, tokens: dict) -> None:
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(json.dumps({"tokens": tokens}, indent=2))
+
+
+def test_watchdog_writes_secret_free_healthy_packet_and_exits_zero(
+    tmp_path, monkeypatch
+):
+    now = 1_800_000_000
+    access = _jwt(exp=now + 3600)
+    refresh = "refresh-secret-never-report"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    _write_hermes_auth(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": access, "refresh_token": refresh}
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [{"access_token": access, "refresh_token": refresh}]
+            },
+        },
+    )
+    _write_codex_cli_auth(tmp_path, {"access_token": access, "refresh_token": refresh})
+
+    from agent.codex_auth_watchdog import run_codex_auth_watchdog
+
+    output = io.StringIO()
+    state_path = tmp_path / "state" / "codex_auth_watchdog.json"
+    exit_code = run_codex_auth_watchdog(state_path=state_path, now=now, output=output)
+
+    assert exit_code == 0
+    packet = json.loads(output.getvalue())
+    assert packet == json.loads(state_path.read_text())
+    assert packet["watchdog"] == "codex-auth-no-stranding"
+    assert packet["status"] == "healthy"
+    assert packet["alert"] is False
+    assert packet["fallback_lane"]["available"] is False
+    assert packet["fallback_lane"]["auth_store_ready"] is True
+    assert packet["operator_runbook"] is None
+    serialized = json.dumps(packet)
+    assert access not in serialized
+    assert refresh not in serialized
+
+
+def test_watchdog_degraded_packet_exits_two_with_operator_action(tmp_path, monkeypatch):
+    now = 1_800_000_000
+    cli_access = _jwt(exp=now + 3600)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    _write_hermes_auth(
+        tmp_path, {"version": 1, "providers": {"openai-codex": {"tokens": {}}}}
+    )
+    _write_codex_cli_auth(
+        tmp_path, {"access_token": cli_access, "refresh_token": "cli-refresh-secret"}
+    )
+
+    from agent.codex_auth_watchdog import run_codex_auth_watchdog
+
+    output = io.StringIO()
+    exit_code = run_codex_auth_watchdog(
+        state_path=tmp_path / "state.json", now=now, output=output
+    )
+
+    packet = json.loads(output.getvalue())
+    assert exit_code == 2
+    assert packet["status"] == "degraded"
+    assert packet["alert"] is True
+    assert packet["alert_reason"] == "codex_auth_degraded"
+    assert "hermes auth login openai-codex" in packet["operator_next_action"]
+    assert packet["operator_runbook"]["severity"] == "blocking_candidate_fallback"
+    assert packet["operator_runbook"]["fallback_available"] is False
+    assert packet["operator_runbook"]["fallback_auth_store_ready"] is True
+    assert any(
+        "live standalone Codex CLI smoke" in step
+        for step in packet["operator_runbook"]["repair_steps"]
+    )
+    assert packet["fallback_lane"]["available"] is False
+    assert packet["fallback_lane"]["auth_store_ready"] is True
+    assert "missing_hermes_access_token" in packet["report"]["issues"]
+    assert "cli-refresh-secret" not in json.dumps(packet)
+
+
+def test_watchdog_marks_fallback_available_only_after_live_smoke(tmp_path, monkeypatch):
+    now = 1_800_000_000
+    access = _jwt(exp=now + 3600)
+    refresh = "refresh-secret-never-report"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    _write_hermes_auth(
+        tmp_path, {"version": 1, "providers": {"openai-codex": {"tokens": {}}}}
+    )
+    _write_codex_cli_auth(tmp_path, {"access_token": access, "refresh_token": refresh})
+
+    from agent.codex_auth_watchdog import run_codex_auth_watchdog
+
+    output = io.StringIO()
+    exit_code = run_codex_auth_watchdog(
+        state_path=tmp_path / "state.json",
+        now=now,
+        output=output,
+        standalone_codex_smoke={
+            "status": "passed",
+            "exit_code": 0,
+            "evidence": "stdout line matched OK",
+        },
+    )
+
+    packet = json.loads(output.getvalue())
+    assert exit_code == 2
+    assert packet["fallback_lane"]["available"] is True
+    assert packet["fallback_lane"]["live_smoke"]["status"] == "passed"
+    assert packet["operator_runbook"]["severity"] == "blocking_with_verified_fallback"
+    assert packet["operator_runbook"]["fallback_available"] is True
+    assert packet["operator_runbook"]["fallback_live_smoke_status"] == "passed"
+    assert refresh not in json.dumps(packet)
+
+
+def test_standalone_codex_smoke_redacts_secret_shaped_output():
+    import sys
+
+    from agent.codex_auth_watchdog import run_standalone_codex_smoke
+
+    result = run_standalone_codex_smoke(
+        [sys.executable, "-c", "import sys; print('OK'); print('access_token should-not-leak', file=sys.stderr)"],
+        timeout_seconds=5,
+    )
+
+    assert result == {"status": "passed", "exit_code": 0, "evidence": "output redacted"}
+
+
+def test_standalone_codex_smoke_requires_exact_ok_line():
+    import sys
+
+    from agent.codex_auth_watchdog import run_standalone_codex_smoke
+
+    result = run_standalone_codex_smoke(
+        [sys.executable, "-c", "print('NOT OK')"],
+        timeout_seconds=5,
+    )
+
+    assert result == {
+        "status": "failed",
+        "exit_code": 0,
+        "evidence": "completed without expected OK",
+    }
+
+
+def test_watchdog_internal_failure_packet_redacts_secret_shaped_error():
+    from agent.codex_auth_watchdog import build_watchdog_internal_failure_packet
+
+    packet = build_watchdog_internal_failure_packet(OSError("sk-secret-token binary missing"))
+
+    assert packet["error"]["message"] == "secret-shaped error redacted"
+
+
+def test_watchdog_blocks_fallback_when_codex_cli_auth_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex"))
+    _write_hermes_auth(
+        tmp_path, {"version": 1, "providers": {"openai-codex": {"tokens": {}}}}
+    )
+
+    from agent.codex_auth_watchdog import run_codex_auth_watchdog
+
+    output = io.StringIO()
+    exit_code = run_codex_auth_watchdog(
+        state_path=tmp_path / "state.json", now=1_800_000_000, output=output
+    )
+
+    packet = json.loads(output.getvalue())
+    assert exit_code == 2
+    assert packet["fallback_lane"]["available"] is False
+    assert packet["operator_runbook"]["severity"] == "blocking"
+    assert any(
+        "Do not assume" in step for step in packet["operator_runbook"]["repair_steps"]
+    )
+
+
+def test_watchdog_normalizes_inconsistent_healthy_report(monkeypatch):
+    import agent.codex_auth_watchdog as watchdog
+
+    monkeypatch.setattr(
+        watchdog,
+        "build_codex_auth_health_report",
+        lambda *, now=None: {
+            "status": "healthy",
+            "issues": ["credential_pool_has_exhausted_entries"],
+        },
+    )
+
+    packet = watchdog.build_codex_auth_watchdog_packet(now=1_800_000_000)
+
+    assert packet["status"] == "degraded"
+    assert packet["alert"] is True
+    assert packet["alert_reason"] == "codex_auth_degraded"
+
+
+def test_watchdog_internal_failure_packet_is_structured_and_sanitized():
+    from pathlib import Path
+
+    from agent.codex_auth_watchdog import build_watchdog_internal_failure_packet
+
+    home = str(Path.home())
+    error = OSError(f"cannot write {home}/.hermes/state/codex_auth_watchdog.json")
+
+    packet = build_watchdog_internal_failure_packet(error)
+
+    assert packet["status"] == "degraded"
+    assert packet["alert"] is True
+    assert packet["alert_reason"] == "watchdog_internal_failure"
+    assert packet["error"]["type"] == "OSError"
+    assert home not in packet["error"]["message"]
+
+
+def test_watchdog_main_accepts_state_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "missing-hermes"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex"))
+
+    from agent.codex_auth_watchdog import main
+
+    state_path = tmp_path / "custom" / "watchdog.json"
+    exit_code = main(["--state-path", str(state_path)])
+
+    assert exit_code == 2
+    packet = json.loads(state_path.read_text())
+    assert packet["alert"] is True
+    assert packet["report"]["status"] == "degraded"

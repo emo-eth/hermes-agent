@@ -27,13 +27,18 @@ Security:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
+import tempfile
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -406,7 +411,23 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
-        # Format prompt from template
+        # Build a unique delivery ID early so durable capture receipts can be
+        # written before the prompt is rendered or the agent is dispatched.
+        delivery_id = request.headers.get(
+            "X-GitHub-Delivery",
+            request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+        )
+
+        payload = await self._prepare_payload_for_route(
+            route_config,
+            payload,
+            route_name=route_name,
+            delivery_id=delivery_id,
+            raw_body=raw_body,
+        )
+
+        # Format prompt from template after route-specific enrichment so
+        # transcript/transcription_error placeholders never leak literally.
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(
             prompt_template, payload, event_type, route_name
@@ -440,12 +461,6 @@ class WebhookAdapter(BasePlatformAdapter):
                         )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
-
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-        )
 
         # ── Idempotency ─────────────────────────────────────────
         # Skip duplicate deliveries (webhook retries).
@@ -581,6 +596,193 @@ class WebhookAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    async def _prepare_payload_for_route(
+        self,
+        route_config: dict,
+        payload: dict,
+        *,
+        route_name: str,
+        delivery_id: str,
+        raw_body: bytes,
+    ) -> dict:
+        """Apply route-specific payload enrichment before prompt rendering.
+
+        Voice-drop routes need this before agent dispatch: a missing transcript
+        should become an explicit transcription_error, not a literal template
+        placeholder, and durable captures must leave enough metadata to recover
+        the raw/transcription path later.
+        """
+        enriched = dict(payload)
+        wants_voice_path = bool(
+            route_config.get("transcribe_audio")
+            or route_config.get("retain_audio")
+            or route_config.get("durable_capture")
+        )
+        if not wants_voice_path:
+            return enriched
+
+        if route_config.get("transcribe_audio"):
+            enriched.setdefault("transcript", "")
+            enriched.setdefault("transcription_error", "")
+
+        audio_path = await self._retain_payload_audio(
+            route_config, enriched, route_name=route_name, delivery_id=delivery_id
+        )
+        if audio_path:
+            enriched["audio_path"] = audio_path
+
+        if route_config.get("transcribe_audio") and not enriched.get("transcript"):
+            has_audio = bool(audio_path or enriched.get("audio_base64") or enriched.get("audio"))
+            if not has_audio and not enriched.get("audio_url"):
+                enriched["transcription_error"] = "No audio payload provided"
+            elif not enriched.get("transcription_error"):
+                if audio_path:
+                    enriched.update(await self._transcribe_retained_audio(audio_path))
+                else:
+                    enriched.update(await self._transcribe_inline_audio(route_config, enriched))
+
+        if route_config.get("durable_capture"):
+            self._write_payload_receipt(
+                route_config,
+                enriched,
+                route_name=route_name,
+                delivery_id=delivery_id,
+                raw_body=raw_body,
+            )
+
+        return enriched
+
+    async def _retain_payload_audio(
+        self, route_config: dict, payload: dict, *, route_name: str, delivery_id: str
+    ) -> Optional[str]:
+        """Decode JSON-carried audio into the route capture directory."""
+        if not route_config.get("retain_audio"):
+            return None
+        audio_base64 = payload.get("audio_base64") or payload.get("audio")
+        if not audio_base64:
+            return None
+
+        audio_bytes = self._decode_payload_audio(audio_base64, payload)
+        if audio_bytes is None:
+            return None
+
+        max_audio_bytes = int(route_config.get("max_audio_bytes", 25 * 1024 * 1024))
+        if len(audio_bytes) > max_audio_bytes:
+            payload.setdefault("transcript", "")
+            payload["transcription_error"] = "Audio payload too large"
+            return None
+        if not audio_bytes:
+            payload.setdefault("transcript", "")
+            payload["transcription_error"] = "Audio payload was empty"
+            return None
+
+        filename = self._safe_filename_component(
+            os.path.basename(str(payload.get("audio_filename") or "voice-drop.m4a"))
+        )
+        if not filename:
+            filename = "voice-drop.m4a"
+        capture_dir = self._route_capture_dir(route_config, route_name) / datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        safe_delivery_id = self._safe_filename_component(delivery_id) or "delivery"
+        target = capture_dir / f"{safe_delivery_id}-{filename}"
+        target.write_bytes(audio_bytes)
+        return str(target)
+
+    async def _transcribe_retained_audio(self, audio_path: Optional[str]) -> Dict[str, str]:
+        """Transcribe retained audio when a local transcription tool is available."""
+        if not audio_path:
+            return {"transcription_error": "Audio payload was not retained for transcription"}
+        try:
+            from tools.transcription_tools import transcribe_audio
+        except Exception as exc:
+            return {"transcription_error": f"Audio retained for recovery; transcription tool unavailable: {exc}"}
+        try:
+            result = await asyncio.to_thread(transcribe_audio, audio_path)
+        except Exception as exc:
+            return {"transcription_error": f"Transcription failed: {exc}"}
+        if result.get("success"):
+            return {
+                "transcript": str(result.get("transcript") or ""),
+                "transcription_error": "",
+                "transcription_provider": str(result.get("provider") or ""),
+            }
+        return {"transcription_error": str(result.get("error") or "unknown transcription error")}
+
+    async def _transcribe_inline_audio(self, route_config: dict, payload: dict) -> Dict[str, str]:
+        """Transcribe inline audio through a temporary file when retain_audio=false."""
+        audio_base64 = payload.get("audio_base64") or payload.get("audio")
+        audio_bytes = self._decode_payload_audio(audio_base64, payload)
+        if audio_bytes is None:
+            return {"transcription_error": payload.get("transcription_error", "Invalid audio payload")}
+        max_audio_bytes = int(route_config.get("max_audio_bytes", 25 * 1024 * 1024))
+        if len(audio_bytes) > max_audio_bytes:
+            return {"transcription_error": "Audio payload too large"}
+        if not audio_bytes:
+            return {"transcription_error": "Audio payload was empty"}
+
+        suffix = Path(str(payload.get("audio_filename") or "voice-drop.m4a")).suffix or ".m4a"
+        with tempfile.NamedTemporaryFile(prefix="hermes-webhook-audio-", suffix=suffix, delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        try:
+            return await self._transcribe_retained_audio(tmp_path)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _decode_payload_audio(audio_base64: Any, payload: dict) -> Optional[bytes]:
+        data = str(audio_base64 or "")
+        if "," in data and data.lstrip().lower().startswith("data:"):
+            data = data.split(",", 1)[1]
+        try:
+            return base64.b64decode(data, validate=False)
+        except Exception as exc:
+            payload.setdefault("transcript", "")
+            payload["transcription_error"] = f"Invalid audio_base64 payload: {exc}"
+            return None
+
+    @staticmethod
+    def _safe_filename_component(value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-_")[:120]
+
+    def _write_payload_receipt(
+        self,
+        route_config: dict,
+        payload: dict,
+        *,
+        route_name: str,
+        delivery_id: str,
+        raw_body: bytes,
+    ) -> None:
+        """Persist a compact recovery receipt for a webhook delivery."""
+        capture_dir = self._route_capture_dir(route_config, route_name) / datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        receipt = {
+            "route": route_name,
+            "delivery_id": delivery_id,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "source_app": payload.get("source_app", ""),
+            "transcript": payload.get("transcript", ""),
+            "transcription_error": payload.get("transcription_error", ""),
+            "audio_path": payload.get("audio_path", ""),
+            "raw_body_bytes": len(raw_body),
+            "recovery_hint": "Use audio_path or delivery_id to re-transcribe/reprocess this drop.",
+        }
+        safe_delivery_id = self._safe_filename_component(delivery_id) or "delivery"
+        (capture_dir / f"{safe_delivery_id}.json").write_text(
+            json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+    def _route_capture_dir(self, route_config: dict, route_name: str) -> Path:
+        configured = str(route_config.get("capture_dir") or "webhook-captures")
+        base = Path(configured).expanduser()
+        if not base.is_absolute():
+            base = Path.home() / ".hermes" / base
+        return base / route_name
 
     # ------------------------------------------------------------------
     # Signature validation

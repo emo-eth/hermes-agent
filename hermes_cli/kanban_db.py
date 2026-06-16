@@ -4664,17 +4664,95 @@ def list_profiles_on_disk() -> list[str]:
 def known_assignees(conn: sqlite3.Connection) -> list[dict]:
     """Return every assignee name known to the board or on disk.
 
-    Each entry is ``{"name": str, "on_disk": bool, "counts": {status: n}}``.
-    A name is included when it's a configured profile on disk OR when
-    any non-archived task has it as the assignee. Used by:
+    Each entry includes board load plus profile metadata when the assignee is
+    a real Hermes profile::
+
+        {
+          "name": str,
+          "on_disk": bool,
+          "counts": {status: n},
+          "description": str,
+          "description_auto": bool,
+          "model": str | None,
+          "provider": str | None,
+          "skill_count": int | None,
+        }
+
+    A name is included when it's a configured profile on disk OR when any
+    non-archived task has it as the assignee. Used by:
 
     - ``hermes kanban assignees`` for the terminal.
-    - The dashboard assignee dropdown (so a fresh profile appears in
+    - The dashboard assignee dropdown/registry (so a fresh profile appears in
       the picker even before it's been given any task).
-    - Router-profile heuristics ("who's overloaded?") without scanning
-      the whole board.
+    - Router-profile heuristics ("who's overloaded?" and "what is this worker
+      good at?") without scanning the whole board.
     """
     on_disk = set(list_profiles_on_disk())
+
+    profile_meta: dict[str, dict[str, Any]] = {}
+    try:
+        from hermes_cli.profiles import list_profiles
+
+        for profile in list_profiles():
+            profile_meta[profile.name] = {
+                "description": getattr(profile, "description", "") or "",
+                "description_auto": bool(getattr(profile, "description_auto", False)),
+                "model": profile.model,
+                "provider": profile.provider,
+                "skill_count": int(profile.skill_count),
+            }
+            on_disk.add(profile.name)
+    except Exception:
+        # Keep the assignee registry available even if the richer CLI profile
+        # path cannot import/read metadata. The count/on-disk surface is the
+        # compatibility contract; metadata is opportunistic.
+        pass
+
+    # Older installs may not expose profile descriptions through
+    # ``ProfileInfo`` yet. Read the tiny metadata/config files directly so the
+    # kanban registry is profile-aware across mixed-version trees.
+    try:
+        import yaml
+        from hermes_constants import get_default_hermes_root
+
+        default_root = get_default_hermes_root()
+        profile_dirs: dict[str, Path] = {"default": default_root}
+        profiles_dir = default_root / "profiles"
+        if profiles_dir.is_dir():
+            for entry in profiles_dir.iterdir():
+                if entry.is_dir() and (entry / "config.yaml").is_file():
+                    profile_dirs[entry.name] = entry
+        for name, profile_dir in profile_dirs.items():
+            if name not in on_disk:
+                continue
+            meta = profile_meta.setdefault(
+                name,
+                {
+                    "description": "",
+                    "description_auto": False,
+                    "model": None,
+                    "provider": None,
+                    "skill_count": None,
+                },
+            )
+            profile_yaml = profile_dir / "profile.yaml"
+            if profile_yaml.is_file() and not meta.get("description"):
+                loaded = yaml.safe_load(profile_yaml.read_text(encoding="utf-8")) or {}
+                if isinstance(loaded, dict):
+                    meta["description"] = str(loaded.get("description") or "").strip()
+                    meta["description_auto"] = bool(loaded.get("description_auto", False))
+            config_yaml = profile_dir / "config.yaml"
+            if config_yaml.is_file() and not (meta.get("model") or meta.get("provider")):
+                loaded = yaml.safe_load(config_yaml.read_text(encoding="utf-8")) or {}
+                if isinstance(loaded, dict):
+                    model_cfg = loaded.get("model", {})
+                    if isinstance(model_cfg, str):
+                        meta["model"] = model_cfg
+                    elif isinstance(model_cfg, dict):
+                        meta["model"] = model_cfg.get("default") or model_cfg.get("model")
+                        meta["provider"] = model_cfg.get("provider")
+    except Exception:
+        pass
 
     # Count tasks per (assignee, status), excluding archived.
     counts: dict[str, dict[str, int]] = {}
@@ -4686,14 +4764,22 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
         counts.setdefault(row["assignee"], {})[row["status"]] = int(row["n"])
 
     names = sorted(on_disk | set(counts.keys()))
-    return [
-        {
-            "name": name,
-            "on_disk": name in on_disk,
-            "counts": counts.get(name, {}),
-        }
-        for name in names
-    ]
+    out = []
+    for name in names:
+        meta = profile_meta.get(name, {})
+        out.append(
+            {
+                "name": name,
+                "on_disk": name in on_disk,
+                "counts": counts.get(name, {}),
+                "description": meta.get("description", ""),
+                "description_auto": bool(meta.get("description_auto", False)),
+                "model": meta.get("model"),
+                "provider": meta.get("provider"),
+                "skill_count": meta.get("skill_count"),
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------

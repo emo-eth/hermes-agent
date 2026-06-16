@@ -15,10 +15,13 @@ Covers:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
+import sys
 import time
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -210,6 +213,138 @@ class TestRenderPrompt:
         assert "push" in result
         assert "my-route" in result
         assert "key" in result
+
+
+class TestVoiceDropPayloadPreparation:
+    """Regression coverage for iOS voice-drop prompt/receipt handling."""
+
+    @pytest.mark.asyncio
+    async def test_voice_drop_defaults_missing_transcription_fields_before_prompt_render(self, tmp_path):
+        """Voice routes should not dispatch literal {transcript} placeholders."""
+        adapter = _make_adapter()
+        payload = {"source_app": "iOS Action Button Audio"}
+
+        enriched = await adapter._prepare_payload_for_route(
+            {
+                "transcribe_audio": True,
+                "durable_capture": True,
+                "capture_dir": str(tmp_path),
+            },
+            payload,
+            route_name="ios-voice-drop",
+            delivery_id="drop-001",
+            raw_body=json.dumps(payload).encode(),
+        )
+        rendered = adapter._render_prompt(
+            "Transcript: {transcript}\nTranscription error: {transcription_error}\nSource: {source_app}",
+            enriched,
+            "ios_voice_drop",
+            "ios-voice-drop",
+        )
+
+        assert "{transcript}" not in rendered
+        assert "{transcription_error}" not in rendered
+        assert "No audio payload provided" in rendered
+
+        receipts = list(tmp_path.rglob("*.json"))
+        assert len(receipts) == 1
+        receipt = json.loads(receipts[0].read_text())
+        assert receipt["route"] == "ios-voice-drop"
+        assert receipt["delivery_id"] == "drop-001"
+        assert receipt["transcription_error"] == "No audio payload provided"
+
+    @pytest.mark.asyncio
+    async def test_voice_drop_retains_audio_and_writes_recovery_receipt(self, tmp_path):
+        """Audio drops should leave a recoverable receipt even before agent dispatch."""
+        adapter = _make_adapter()
+        audio_bytes = b"fake m4a bytes"
+        payload = {
+            "source_app": "iOS Action Button Audio",
+            "audio_filename": "voice.m4a",
+            "audio_base64": base64.b64encode(audio_bytes).decode(),
+            "transcript": "remember the tomato thing",
+        }
+
+        enriched = await adapter._prepare_payload_for_route(
+            {
+                "transcribe_audio": True,
+                "retain_audio": True,
+                "durable_capture": True,
+                "capture_dir": str(tmp_path),
+            },
+            payload,
+            route_name="ios-voice-drop",
+            delivery_id="drop-002",
+            raw_body=json.dumps(payload).encode(),
+        )
+
+        assert enriched["transcript"] == "remember the tomato thing"
+        assert enriched["transcription_error"] == ""
+        audio_path = enriched["audio_path"]
+        assert audio_path.endswith("voice.m4a")
+        assert open(audio_path, "rb").read() == audio_bytes
+
+        receipt = json.loads(next(tmp_path.rglob("*.json")).read_text())
+        assert receipt["audio_path"] == audio_path
+        assert receipt["recovery_hint"]
+
+    @pytest.mark.asyncio
+    async def test_voice_drop_sanitizes_delivery_id_for_filesystem_paths(self, tmp_path):
+        """Delivery IDs are external input and must not control capture paths."""
+        adapter = _make_adapter()
+        payload = {
+            "audio_filename": "voice.m4a",
+            "audio_base64": base64.b64encode(b"voice").decode(),
+        }
+
+        enriched = await adapter._prepare_payload_for_route(
+            {
+                "transcribe_audio": True,
+                "retain_audio": True,
+                "durable_capture": True,
+                "capture_dir": str(tmp_path),
+            },
+            payload,
+            route_name="ios-voice-drop",
+            delivery_id="../../evil/drop",
+            raw_body=json.dumps(payload).encode(),
+        )
+
+        assert str(tmp_path) in enriched["audio_path"]
+        assert ".." not in enriched["audio_path"]
+        assert (tmp_path / "ios-voice-drop").exists()
+        assert not (tmp_path.parent / "evil").exists()
+
+    @pytest.mark.asyncio
+    async def test_voice_drop_transcribes_audio_even_when_not_retaining_permanently(self, tmp_path, monkeypatch):
+        """transcribe_audio=true should not depend on retain_audio=true."""
+        adapter = _make_adapter()
+        fake_tools = types.ModuleType("tools.transcription_tools")
+
+        def fake_transcribe(audio_path):
+            assert open(audio_path, "rb").read() == b"voice"
+            return {"success": True, "transcript": "hello from audio", "provider": "test"}
+
+        fake_tools.transcribe_audio = fake_transcribe
+        monkeypatch.setitem(sys.modules, "tools.transcription_tools", fake_tools)
+        payload = {"audio_filename": "voice.m4a", "audio_base64": base64.b64encode(b"voice").decode()}
+
+        enriched = await adapter._prepare_payload_for_route(
+            {
+                "transcribe_audio": True,
+                "retain_audio": False,
+                "durable_capture": True,
+                "capture_dir": str(tmp_path),
+            },
+            payload,
+            route_name="ios-voice-drop",
+            delivery_id="drop-003",
+            raw_body=json.dumps(payload).encode(),
+        )
+
+        assert enriched["transcript"] == "hello from audio"
+        assert enriched["transcription_error"] == ""
+        assert "audio_path" not in enriched
 
 
 # ===================================================================
