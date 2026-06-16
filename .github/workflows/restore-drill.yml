@@ -1,0 +1,197 @@
+name: Hermes Restore Drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Docker base image for the clean restore drill
+        required: false
+        default: debian:13.4
+  schedule:
+    # Weekly proof that the private workspace backup still restores.
+    - cron: '17 10 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/restore-hermes.sh'
+      - 'scripts/bootstrap-hermes-restore.sh'
+      - 'scripts/test-hermes-restore-container.sh'
+      - 'scripts/validate_hermes_restore_report.py'
+      - 'setup-hermes.sh'
+      - 'scripts/audit_hermes_backup.py'
+      - 'scripts/export_state_sessions_to_legacy.py'
+      - 'scripts/normalize_legacy_paths.py'
+      - 'scripts/rebuild_legacy_session_db.py'
+      - 'tests/test_audit_hermes_backup.py'
+      - 'tests/test_restore_hermes_script.py'
+      - 'tests/test_validate_hermes_restore_report.py'
+      - '.github/workflows/restore-drill.yml'
+  pull_request:
+    paths:
+      - 'scripts/restore-hermes.sh'
+      - 'scripts/bootstrap-hermes-restore.sh'
+      - 'scripts/test-hermes-restore-container.sh'
+      - 'scripts/validate_hermes_restore_report.py'
+      - 'setup-hermes.sh'
+      - 'scripts/audit_hermes_backup.py'
+      - 'scripts/export_state_sessions_to_legacy.py'
+      - 'scripts/normalize_legacy_paths.py'
+      - 'scripts/rebuild_legacy_session_db.py'
+      - 'tests/test_audit_hermes_backup.py'
+      - 'tests/test_restore_hermes_script.py'
+      - 'tests/test_validate_hermes_restore_report.py'
+      - '.github/workflows/restore-drill.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-drill-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RESTORE_IMAGE: ${{ github.event.inputs.image || 'debian:13.4' }}
+  BACKUP_REPO: emo-eth/hermes-workspace-backup
+  BEADS_REPO: emo-eth/hermes-beads
+
+jobs:
+  restore-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Hermes runtime
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          path: hermes-agent
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: Check restore bootstrap entrypoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HERMES_BOOTSTRAP_NO_INSTALL: "1"
+        run: |
+          bash "$GITHUB_WORKSPACE/hermes-agent/scripts/bootstrap-hermes-restore.sh" --check-only
+
+      - name: Run restore script unit checks
+        working-directory: hermes-agent
+        run: |
+          bash -n scripts/restore-hermes.sh
+          bash -n setup-hermes.sh
+          uv run --frozen --python 3.11 --extra dev pytest \
+            tests/test_restore_hermes_script.py \
+            tests/test_audit_hermes_backup.py \
+            tests/test_validate_hermes_restore_report.py \
+            -q
+
+      - name: Check private restore token
+        id: restore-token
+        env:
+          HERMES_RESTORE_TOKEN: ${{ secrets.HERMES_RESTORE_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ -n "$HERMES_RESTORE_TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_token=false" >> "$GITHUB_OUTPUT"
+          cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## Missing HERMES_RESTORE_TOKEN
+
+          Add a fine-grained GitHub token secret named `HERMES_RESTORE_TOKEN`
+          with read access to:
+
+          - `emo-eth/hermes-agent`
+          - `emo-eth/hermes-workspace-backup`
+          - `emo-eth/hermes-beads`
+          EOF
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+
+          This pull request ran the public restore bootstrap preflight only.
+          Full clean-container restore is skipped on PRs without the private
+          backup/beads token.
+          EOF
+            exit 0
+          fi
+
+          echo "::error title=Missing restore token::Set the HERMES_RESTORE_TOKEN repository secret."
+          exit 1
+
+      - name: Checkout workspace backup
+        if: steps.restore-token.outputs.has_token == 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          repository: ${{ env.BACKUP_REPO }}
+          token: ${{ secrets.HERMES_RESTORE_TOKEN }}
+          path: hermes-workspace-backup
+
+      - name: Checkout beads backup
+        if: steps.restore-token.outputs.has_token == 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          repository: ${{ env.BEADS_REPO }}
+          token: ${{ secrets.HERMES_RESTORE_TOKEN }}
+          path: hermes-beads
+
+      - name: Run clean-container restore drill
+        if: steps.restore-token.outputs.has_token == 'true'
+        run: |
+          bash "$GITHUB_WORKSPACE/hermes-agent/scripts/test-hermes-restore-container.sh" \
+            --agent-dir "$GITHUB_WORKSPACE/hermes-agent" \
+            --backup-dir "$GITHUB_WORKSPACE/hermes-workspace-backup" \
+            --beads-dir "$GITHUB_WORKSPACE/hermes-beads" \
+            --image "$RESTORE_IMAGE" \
+            --report "$RUNNER_TEMP/hermes-restore-report.json"
+
+      - name: Summarize restore report
+        if: always()
+        run: |
+          if [ ! -f "$RUNNER_TEMP/hermes-restore-report.json" ]; then
+            echo "No restore report was produced." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          uv run --python 3.11 python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path(os.environ["RUNNER_TEMP"], "hermes-restore-report.json").read_text())
+          print("## Hermes Restore Drill")
+          print("")
+          print(f"- image: `{os.environ.get('RESTORE_IMAGE', '')}`")
+          print(f"- timestamp: `{report.get('timestamp')}`")
+          print(f"- agent commit: `{report.get('agent_commit') or 'unknown'}`")
+          print(f"- backup commit: `{report.get('backup_commit') or 'unknown'}`")
+          print(f"- beads commit: `{report.get('beads_commit') or 'unknown'}`")
+          print(f"- sessions: `{report.get('session_count')}`")
+          print(f"- messages: `{report.get('message_count')}`")
+          print(f"- cron: `{report.get('active_cron_count')}` active / `{report.get('total_cron_count')}` total")
+          print(f"- missing required cron: `{report.get('missing_required_cron') or 'none'}`")
+          print(f"- legacy path files: `{report.get('legacy_hermes_path_file_count')}`")
+          print(f"- doctor/status/sessions/cron/gateway: `{report.get('doctor_status')}` / `{report.get('status_status')}` / `{report.get('sessions_status')}` / `{report.get('cron_status')}` / `{report.get('gateway_check_status')}`")
+          print("")
+          print("### Backup Parity Audit")
+          print("")
+          print(f"- audit status: `{report.get('backup_audit_status', 'missing')}`")
+          print(f"- missing/extra JSONL: `{report.get('backup_audit_missing_jsonl_count', 'missing')}` / `{report.get('backup_audit_extra_jsonl_count', 'missing')}`")
+          print(f"- missing/extra sessions.json entries: `{report.get('backup_audit_missing_sessions_json_entries', 'missing')}` / `{report.get('backup_audit_extra_sessions_json_entries', 'missing')}`")
+          print(f"- JSONL message drift: `{report.get('backup_audit_jsonl_message_drift_count', 'missing')}`")
+          print(f"- live JSONL message mismatches: `{report.get('backup_audit_live_jsonl_message_mismatch_count', 'missing')}`")
+          print(f"- state sessions without legacy files: `{report.get('backup_audit_live_state_sessions_without_legacy_files', 'missing')}`")
+          print(f"- message sessions without JSONL: `{report.get('backup_audit_live_message_sessions_without_jsonl', 'missing')}`")
+          print(f"- backup state.db tracked: `{report.get('backup_state_db_tracked', 'missing')}`")
+          print(f"- backup state.db size: `{report.get('backup_state_db_size_bytes', 'missing')}` bytes")
+          PY
+
+      - name: Upload restore report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: hermes-restore-report
+          path: ${{ runner.temp }}/hermes-restore-report.json
+          if-no-files-found: ignore
+          retention-days: 14

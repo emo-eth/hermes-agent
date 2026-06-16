@@ -232,6 +232,8 @@ def _make_hindsight_provider():
     provider._retain_max_content_chars = 100_000
     provider._retain_max_queue_size = 100
     provider._retain_async = False
+    provider._retain_max_content_chars = 0
+    provider._retain_max_queue_size = 0
     provider._bank_id = "test-bank"
     # Prefetch state the switch path drains/clears.
     provider._prefetch_thread = None
