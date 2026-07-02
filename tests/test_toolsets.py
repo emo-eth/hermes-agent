@@ -49,6 +49,11 @@ class TestGetToolset:
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 
+    def test_domain_modules_is_static_toolset(self):
+        ts = get_toolset("domain_modules")
+        assert ts is not None
+        assert "domain_modules_list" in ts["tools"]
+
 
 class TestResolveToolset:
     def test_leaf_toolset(self):
@@ -129,6 +134,9 @@ class TestValidateToolset:
 
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
+
+    def test_domain_modules_validates_without_registry_import_order(self):
+        assert validate_toolset("domain_modules") is True
 
     def test_mcp_alias_uses_live_registry(self, monkeypatch):
         reg = ToolRegistry()

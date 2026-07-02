@@ -1,4 +1,7 @@
 """Tests for hermes-api-server toolset and API server tool availability."""
+import json
+
+import pytest
 from unittest.mock import patch, MagicMock
 
 
@@ -55,6 +58,12 @@ class TestHermesApiServerToolset:
     def test_toolset_excludes_text_to_speech(self):
         tools = resolve_toolset("hermes-api-server")
         assert "text_to_speech" not in tools
+
+    def test_domain_modules_toolset_is_discoverable(self):
+        from hermes_cli.tools_config import _get_effective_configurable_toolsets
+
+        names = [name for name, _label, _desc in _get_effective_configurable_toolsets()]
+        assert "domain_modules" in names
 
 
 class TestApiServerPlatformConfig:
@@ -124,3 +133,30 @@ class TestApiServerAdapterToolset:
             call_kwargs = mock_agent_cls.call_args
             toolsets = call_kwargs.kwargs.get("enabled_toolsets")
             assert sorted(toolsets) == ["terminal", "web"]
+
+    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
+    @pytest.mark.asyncio
+    async def test_toolsets_endpoint_includes_enabled_toolset_not_in_checklist(self, monkeypatch):
+        """Discovery must include toolsets the API agent can actually execute."""
+        from gateway.platforms.api_server import APIServerAdapter
+        from gateway.config import PlatformConfig
+        import hermes_cli.config as config_mod
+        import hermes_cli.tools_config as tools_config_mod
+
+        adapter = APIServerAdapter(PlatformConfig())
+
+        class DummyRequest:
+            pass
+
+        monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"api_server": ["domain_modules"]}})
+        monkeypatch.setattr(tools_config_mod, "_get_effective_configurable_toolsets", lambda: [])
+        monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_args, **_kwargs: {"domain_modules"})
+        monkeypatch.setattr(tools_config_mod, "_toolset_has_keys", lambda *_args, **_kwargs: False)
+
+        with patch.object(adapter, "_check_auth", return_value=None):
+            response = await adapter._handle_toolsets(DummyRequest())
+
+        assert response.status == 200
+        body = json.loads(response.text)
+        names = [entry["name"] for entry in body["data"]]
+        assert "domain_modules" in names

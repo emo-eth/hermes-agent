@@ -217,6 +217,12 @@ TOOLSETS = {
         "tools": [],
         "includes": []
     },
+
+    "domain_modules": {
+        "description": "Domain Modules: task-scoped background context documents, distinct from procedural skills",
+        "tools": ["domain_modules_list", "domain_module_view", "domain_module_manage"],
+        "includes": []
+    },
     
     "session_search": {
         "description": "Search and recall past conversations with summarization",

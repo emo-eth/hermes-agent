@@ -1951,6 +1951,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # pastes `rm -rf /`), so it must not be scanned with the strict
     # user-prompt pattern set — see _scan_assembled_cron_prompt.
     has_injected_data = False
+    domain_context = ""
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
@@ -2029,6 +2030,24 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
+    domain_modules = job.get("domain_modules")
+    if isinstance(domain_modules, str):
+        domain_modules = [domain_modules]
+    domain_module_names = [str(name).strip() for name in (domain_modules or []) if str(name).strip()]
+    if domain_module_names:
+        try:
+            from tools.domain_modules_tool import build_domain_module_context
+
+            domain_context = build_domain_module_context(domain_module_names).strip()
+            if domain_context:
+                has_injected_data = True
+        except Exception:
+            logger.warning(
+                "Cron job '%s': failed to load domain modules, skipping",
+                job.get("name", job.get("id")),
+                exc_info=True,
+            )
+
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (
@@ -2042,7 +2061,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "Never combine [SILENT] with content — either report your "
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
-    prompt = cron_hint + prompt
+    prompt_body = prompt
+    prompt = cron_hint + prompt_body
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
@@ -2051,6 +2071,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
+        if domain_context:
+            prompt = f"{cron_hint}{domain_context}\n\n{prompt_body}"
         return _scan_assembled_cron_prompt(
             prompt,
             job,
@@ -2064,6 +2086,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
 
     parts = []
+    if domain_context:
+        parts.extend([domain_context, ""])
     skipped: list[str] = []
     for skill_name in skill_names:
         # Cron jobs historically accepted only skill names here, but the CLI/gateway

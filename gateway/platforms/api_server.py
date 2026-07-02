@@ -1357,7 +1357,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _get_platform_tools,
                 _toolset_has_keys,
             )
-            from toolsets import resolve_toolset
+            from toolsets import get_toolset_info, resolve_toolset
 
             config = load_config()
             enabled_toolsets = _get_platform_tools(
@@ -1365,8 +1365,23 @@ class APIServerAdapter(BasePlatformAdapter):
                 "api_server",
                 include_default_mcp_servers=False,
             )
+            rows = list(_get_effective_configurable_toolsets())
+            seen = {name for name, _, _ in rows}
+            # Discovery must match execution. Some valid toolsets can be
+            # enabled for the API server without being shown by the interactive
+            # `hermes tools` checklist; include those enabled toolsets here so
+            # clients don't see a narrower surface than the agent can execute.
+            for name in sorted(enabled_toolsets):
+                if name in seen:
+                    continue
+                info = get_toolset_info(name)
+                if not info:
+                    continue
+                rows.append((name, name.replace("_", " ").title(), info.get("description", "")))
+                seen.add(name)
+
             data: List[Dict[str, Any]] = []
-            for name, label, desc in _get_effective_configurable_toolsets():
+            for name, label, desc in rows:
                 try:
                     tools = sorted(set(resolve_toolset(name)))
                 except Exception:
