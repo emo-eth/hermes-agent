@@ -4020,7 +4020,7 @@ class DiscordAdapter(BasePlatformAdapter):
             interaction: discord.Interaction,
             name: str,
             message: str = "",
-            auto_archive_duration: int = 1440,
+            auto_archive_duration: int = 60,
         ):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
@@ -4466,7 +4466,7 @@ class DiscordAdapter(BasePlatformAdapter):
         interaction: discord.Interaction,
         name: str,
         message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: int = 60,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
         if not await self._check_slash_authorization(interaction, "/thread"):
@@ -5015,7 +5015,7 @@ class DiscordAdapter(BasePlatformAdapter):
         *,
         name: str,
         message: str = "",
-        auto_archive_duration: int = 1440,
+        auto_archive_duration: int = 60,
     ) -> Dict[str, Any]:
         """Create a thread in the current Discord channel.
 
@@ -5084,6 +5084,27 @@ class DiscordAdapter(BasePlatformAdapter):
     # Auto-thread helpers
     # ------------------------------------------------------------------
 
+    def _auto_thread_archive_duration(self) -> int:
+        """Configured auto-archive duration for bot-created Discord threads."""
+        raw = os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_DURATION", "60").strip()
+        try:
+            duration = int(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Invalid DISCORD_AUTO_THREAD_ARCHIVE_DURATION=%r; using 60",
+                self.name,
+                raw,
+            )
+            return 60
+        if duration not in VALID_THREAD_AUTO_ARCHIVE_MINUTES:
+            logger.warning(
+                "[%s] Unsupported DISCORD_AUTO_THREAD_ARCHIVE_DURATION=%r; using 60",
+                self.name,
+                raw,
+            )
+            return 60
+        return duration
+
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create a thread from a user message for auto-threading.
 
@@ -5105,6 +5126,7 @@ class DiscordAdapter(BasePlatformAdapter):
         thread_name = content[:80] if content else "Hermes"
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."
+        archive_duration = self._auto_thread_archive_duration()
 
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
         reason = f"Auto-threaded from mention by {display_name}"
@@ -5114,7 +5136,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         for attempt in range(2):
             try:
-                thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+                thread = await message.create_thread(name=thread_name, auto_archive_duration=archive_duration)
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
@@ -5124,7 +5146,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                     thread = await seed_msg.create_thread(
                         name=thread_name,
-                        auto_archive_duration=1440,
+                        auto_archive_duration=archive_duration,
                         reason=reason,
                     )
                     return thread
@@ -5187,6 +5209,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
+        archive_duration = self._auto_thread_archive_duration()
 
         # First try: create a thread directly on the channel.
         try:
@@ -5194,7 +5217,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if create is not None:
                 thread = await create(
                     name=thread_name,
-                    auto_archive_duration=1440,
+                    auto_archive_duration=archive_duration,
                     reason=reason,
                 )
                 return str(thread.id)
@@ -5212,7 +5235,7 @@ class DiscordAdapter(BasePlatformAdapter):
             seed_msg = await send(f"\U0001f9f5 Hermes handoff: **{thread_name}**")
             thread = await seed_msg.create_thread(
                 name=thread_name,
-                auto_archive_duration=1440,
+                auto_archive_duration=archive_duration,
                 reason=reason,
             )
             return str(thread.id)
@@ -5808,7 +5831,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_keys & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -7637,6 +7660,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    if "auto_thread_archive_duration" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD_ARCHIVE_DURATION"):
+        os.environ["DISCORD_AUTO_THREAD_ARCHIVE_DURATION"] = str(discord_cfg["auto_thread_archive_duration"])
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     # ignored_channels: channels where bot never responds (even when mentioned)
