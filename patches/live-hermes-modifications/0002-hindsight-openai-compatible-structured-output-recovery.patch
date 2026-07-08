@@ -1,0 +1,298 @@
+--- a/venv/lib/python3.11/site-packages/hindsight_api/engine/providers/openai_compatible_llm.py
++++ b/venv/lib/python3.11/site-packages/hindsight_api/engine/providers/openai_compatible_llm.py
+@@ -29,6 +29,7 @@
+ 
+ import httpx
+ from openai import APIConnectionError, APIStatusError, AsyncOpenAI, LengthFinishReasonError
++from pydantic import ValidationError
+ 
+ from hindsight_api.config import DEFAULT_LLM_TIMEOUT, ENV_LLM_TIMEOUT
+ from hindsight_api.engine.llm_interface import LLMInterface, OutputTooLongError
+@@ -68,6 +69,92 @@
+         return content.split("```")[1].split("```")[0].strip()
+     except (IndexError, ValueError):
+         return content
++
++
++def _extract_balanced_json(content: str) -> str | None:
++    """Return the first balanced JSON object/array embedded in provider text.
++
++    Local models sometimes prepend prose despite schema mode. json.loads() then
++    fails with "Extra data" or "Expecting value" even though a valid JSON object
++    is present. This scanner keeps string/escape state so braces inside strings
++    don't corrupt the balance check.
++    """
++    starts = [idx for idx in (content.find("{"), content.find("[")) if idx >= 0]
++    if not starts:
++        return None
++    start = min(starts)
++    opener = content[start]
++    closer = "}" if opener == "{" else "]"
++    stack = [closer]
++    in_string = False
++    escape = False
++    for idx in range(start + 1, len(content)):
++        ch = content[idx]
++        if in_string:
++            if escape:
++                escape = False
++            elif ch == "\\":
++                escape = True
++            elif ch == '"':
++                in_string = False
++            continue
++        if ch == '"':
++            in_string = True
++        elif ch == "{":
++            stack.append("}")
++        elif ch == "[":
++            stack.append("]")
++        elif ch in "}]":
++            if not stack or ch != stack[-1]:
++                return None
++            stack.pop()
++            if not stack:
++                return content[start : idx + 1]
++    return None
++
++
++def _coerce_numbered_fact_text(content: str) -> dict[str, Any] | None:
++    """Coerce Gemma's common numbered fact prose into FactExtractionResponse JSON.
++
++    The Hindsight retain path asks for {"facts": [...]}, but gemma4:e2b-mlx often
++    ignores Ollama's schema and emits repeated blocks like:
++      1. **what**: ...
++      2. **when**: ...
++      ...
++      fact_type: assistant
++    Treat that as recoverable instead of spending four GPU-heavy retries.
++    """
++    if "**what**" not in content and "fact_type:" not in content:
++        return None
++    blocks = re.split(r"(?m)^\s*\d+\.\s+\*\*what\*\*\s*:\s*", content)
++    facts: list[dict[str, Any]] = []
++    for block in blocks[1:]:
++        text = "what: " + block
++        fields: dict[str, str] = {}
++        for name in ("what", "when", "where", "who", "why"):
++            m = re.search(
++                rf"(?is)(?:^|\n)\s*(?:\d+\.\s+)?(?:\*\*)?{name}(?:\*\*)?\s*:\s*(.*?)(?=\n\s*(?:\d+\.\s+)?(?:\*\*)?(?:what|when|where|who|why)(?:\*\*)?\s*:|\n\s*fact_(?:kind|type)\s*:|\Z)",
++                text,
++            )
++            fields[name] = (m.group(1).strip() if m else "N/A")
++        fact_kind_match = re.search(r"(?im)^\s*fact_kind\s*:\s*(\w+)", text)
++        fact_type_match = re.search(r"(?im)^\s*fact_type\s*:\s*(\w+)", text)
++        what = fields.get("what", "").strip()
++        if not what or what.upper() == "N/A":
++            continue
++        facts.append(
++            {
++                "what": what,
++                "when": fields.get("when") or "N/A",
++                "where": fields.get("where") or "N/A",
++                "who": fields.get("who") or "N/A",
++                "why": fields.get("why") or "N/A",
++                "fact_kind": fact_kind_match.group(1) if fact_kind_match else "conversation",
++                "fact_type": fact_type_match.group(1) if fact_type_match else "assistant",
++                "entities": [],
++            }
++        )
++    return {"facts": facts} if facts else None
+ 
+ 
+ def _response_get(response: Any, key: str, default: Any = None) -> Any:
+@@ -575,38 +662,73 @@
+                     # produce these (confirmed with MiniMax, some Ollama models,
+                     # Claude via proxies). No-op when content is already bare JSON.
+                     clean_content = _strip_code_fences(content)
++                    json_data: Any
+                     try:
+                         json_data = json.loads(clean_content)
+                     except json.JSONDecodeError:
+-                        # Fallback to parsing raw content in case stripping was wrong
++                        # Fallback to parsing raw content in case stripping was wrong.
++                        # If the model still wrapped a valid JSON object/array in prose,
++                        # salvage the balanced JSON instead of burning another local-GPU retry.
+                         try:
+                             json_data = json.loads(content)
+                         except json.JSONDecodeError as json_err:
+-                            # Truncate content for logging
+-                            content_preview = content[:500] if content else "<empty>"
+-                            if content and len(content) > 700:
+-                                content_preview = f"{content[:500]}...TRUNCATED...{content[-200:]}"
+-                            logger.warning(
+-                                f"JSON parse error from LLM response (attempt {attempt + 1}/{max_retries + 1}): {json_err}\n"
+-                                f"  Model: {self.provider}/{self.model}\n"
+-                                f"  Content length: {len(content) if content else 0} chars\n"
+-                                f"  Content preview: {content_preview!r}\n"
+-                                f"  Finish reason: {_finish_reason_for_choice(first_choice)}"
+-                            )
+-                            # Retry on JSON parse errors
+-                            if attempt < max_retries:
+-                                backoff = min(initial_backoff * (2**attempt), max_backoff)
+-                                await asyncio.sleep(backoff)
+-                                last_exception = json_err
+-                                continue
+-                            else:
+-                                logger.error(f"JSON parse error after {max_retries + 1} attempts, giving up")
+-                                raise
++                            embedded_json = _extract_balanced_json(clean_content)
++                            if embedded_json is not None:
++                                try:
++                                    json_data = json.loads(embedded_json)
++                                except json.JSONDecodeError:
++                                    embedded_json = None
++                            if embedded_json is None:
++                                coerced = None
++                                model_fields = getattr(response_format, "model_fields", {})
++                                if isinstance(model_fields, dict) and "facts" in model_fields:
++                                    coerced = _coerce_numbered_fact_text(clean_content)
++                                if coerced is not None:
++                                    json_data = coerced
++                                else:
++                                    # Truncate content for logging
++                                    content_preview = content[:500] if content else "<empty>"
++                                    if content and len(content) > 700:
++                                        content_preview = f"{content[:500]}...TRUNCATED...{content[-200:]}"
++                                    logger.warning(
++                                        f"JSON parse error from LLM response (attempt {attempt + 1}/{max_retries + 1}): {json_err}\n"
++                                        f"  Model: {self.provider}/{self.model}\n"
++                                        f"  Content length: {len(content) if content else 0} chars\n"
++                                        f"  Content preview: {content_preview!r}\n"
++                                        f"  Finish reason: {_finish_reason_for_choice(first_choice)}"
++                                    )
++                                    # Retry on JSON parse errors
++                                    if attempt < max_retries:
++                                        backoff = min(initial_backoff * (2**attempt), max_backoff)
++                                        await asyncio.sleep(backoff)
++                                        last_exception = json_err
++                                        continue
++                                    else:
++                                        logger.error(f"JSON parse error after {max_retries + 1} attempts, giving up")
++                                        raise
+ 
+-                    if skip_validation:
+-                        result = json_data
+-                    else:
+-                        result = response_format.model_validate(json_data)
++                    try:
++                        if skip_validation:
++                            result = json_data
++                        else:
++                            result = response_format.model_validate(json_data)
++                    except ValidationError as validation_err:
++                        data_preview = repr(json_data)
++                        if len(data_preview) > 700:
++                            data_preview = f"{data_preview[:500]}...TRUNCATED...{data_preview[-200:]}"
++                        logger.warning(
++                            f"JSON schema validation error from LLM response (attempt {attempt + 1}/{max_retries + 1}): {validation_err}\n"
++                            f"  Model: {self.provider}/{self.model}\n"
++                            f"  Parsed JSON preview: {data_preview}\n"
++                            f"  Finish reason: {_finish_reason_for_choice(first_choice)}"
++                        )
++                        if attempt < max_retries:
++                            backoff = min(initial_backoff * (2**attempt), max_backoff)
++                            await asyncio.sleep(backoff)
++                            last_exception = validation_err
++                            continue
++                        logger.error(f"JSON schema validation error after {max_retries + 1} attempts, giving up")
++                        raise
+                 else:
+                     response = await self._client.chat.completions.create(**call_params)
+                     result, first_choice = _content_or_error(
+@@ -1069,29 +1191,43 @@
+                     # Ollama with schema enforcement usually returns bare JSON,
+                     # but some models may still wrap in fences)
+                     clean_content = _strip_code_fences(content)
++                    json_data: Any = None
+                     try:
+                         json_data = json.loads(clean_content)
+                     except json.JSONDecodeError:
+-                        # Fallback to raw content
++                        # Fallback to raw content, then embedded/balanced JSON, then
++                        # known Gemma fact-prose. This avoids hammering the GPU when
++                        # a local model ignored schema mode but produced recoverable text.
+                         try:
+                             json_data = json.loads(content)
+                         except json.JSONDecodeError as json_err:
+-                            content_preview = content[:500] if content else "<empty>"
+-                            if content and len(content) > 700:
+-                                content_preview = f"{content[:500]}...TRUNCATED...{content[-200:]}"
+-                            logger.warning(
+-                                f"Ollama JSON parse error (attempt {attempt + 1}/{max_retries + 1}): {json_err}\n"
+-                                f"  Model: ollama/{self.model}\n"
+-                                f"  Content length: {len(content) if content else 0} chars\n"
+-                                f"  Content preview: {content_preview!r}"
+-                            )
+-                            if attempt < max_retries:
+-                                backoff = min(initial_backoff * (2**attempt), max_backoff)
+-                                await asyncio.sleep(backoff)
+-                                last_exception = json_err
+-                                continue
+-                            else:
+-                                raise
++                            embedded_json = _extract_balanced_json(clean_content)
++                            if embedded_json is not None:
++                                try:
++                                    json_data = json.loads(embedded_json)
++                                except json.JSONDecodeError:
++                                    embedded_json = None
++                            if embedded_json is None:
++                                coerced = _coerce_numbered_fact_text(clean_content)
++                                if coerced is not None:
++                                    json_data = coerced
++                                else:
++                                    content_preview = content[:500] if content else "<empty>"
++                                    if content and len(content) > 700:
++                                        content_preview = f"{content[:500]}...TRUNCATED...{content[-200:]}"
++                                    logger.warning(
++                                        f"Ollama JSON parse error (attempt {attempt + 1}/{max_retries + 1}): {json_err}\n"
++                                        f"  Model: ollama/{self.model}\n"
++                                        f"  Content length: {len(content) if content else 0} chars\n"
++                                        f"  Content preview: {content_preview!r}"
++                                    )
++                                    if attempt < max_retries:
++                                        backoff = min(initial_backoff * (2**attempt), max_backoff)
++                                        await asyncio.sleep(backoff)
++                                        last_exception = json_err
++                                        continue
++                                    else:
++                                        raise
+ 
+                     # Extract token usage from Ollama response
+                     duration = time.time() - start_time
+@@ -1128,15 +1264,32 @@
+ 
+                 except httpx.HTTPStatusError as e:
+                     last_exception = e
++                    status_code = e.response.status_code if e.response is not None else None
++                    body = ""
++                    try:
++                        body = (e.response.text or "")[:500] if e.response is not None else ""
++                    except Exception:
++                        body = "<unreadable>"
++                    # Ollama 4xx errors are deterministic request/model-shape failures, not transient
++                    # provider overload. Retrying them 11 times pins the GPU while making no progress.
++                    if status_code is not None and 400 <= status_code < 500:
++                        logger.error(
++                            f"Ollama non-retryable HTTP error (attempt {attempt + 1}/{max_retries + 1}): "
++                            f"{status_code}; body={body!r}"
++                        )
++                        raise
+                     if attempt < max_retries:
+                         logger.warning(
+-                            f"Ollama HTTP error (attempt {attempt + 1}/{max_retries + 1}): {e.response.status_code}"
++                            f"Ollama HTTP error (attempt {attempt + 1}/{max_retries + 1}): {status_code}; "
++                            f"body={body!r}"
+                         )
+                         backoff = min(initial_backoff * (2**attempt), max_backoff)
+                         await asyncio.sleep(backoff)
+                         continue
+                     else:
+-                        logger.error(f"Ollama HTTP error after {max_retries + 1} attempts: {e}")
++                        logger.error(
++                            f"Ollama HTTP error after {max_retries + 1} attempts: {e}; body={body!r}"
++                        )
+                         raise
+ 
+                 except httpx.RequestError as e:

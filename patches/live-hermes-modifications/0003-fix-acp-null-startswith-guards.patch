@@ -1,0 +1,116 @@
+diff --git a/acp_adapter/server.py b/acp_adapter/server.py
+index df7732973..2f4444be0 100644
+--- a/acp_adapter/server.py
++++ b/acp_adapter/server.py
+@@ -643,19 +643,20 @@ class HermesACPAgent(acp.Agent):
+         )
+ 
+     @staticmethod
+-    def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
++    def _resolve_model_selection(raw_model: str | None, current_provider: str) -> tuple[str, str]:
+         """Resolve ``provider:model`` input into the provider and normalized model id."""
+         target_provider = current_provider
+-        new_model = raw_model.strip()
++        new_model = str(raw_model or "").strip()
+ 
+         try:
+             from hermes_cli.models import detect_provider_for_model, parse_model_input
+ 
+-            target_provider, new_model = parse_model_input(new_model, current_provider)
+-            if target_provider == current_provider:
+-                detected = detect_provider_for_model(new_model, current_provider)
+-                if detected:
+-                    target_provider, new_model = detected
++            if new_model:
++                target_provider, new_model = parse_model_input(new_model, current_provider)
++                if target_provider == current_provider:
++                    detected = detect_provider_for_model(new_model, current_provider)
++                    if detected:
++                        target_provider, new_model = detected
+         except Exception:
+             logger.debug("Provider detection failed, using model as-is", exc_info=True)
+ 
+@@ -1596,7 +1597,7 @@ class HermesACPAgent(acp.Agent):
+                     exc_info=True,
+                 )
+ 
+-        final_response = result.get("final_response", "")
++        final_response = result.get("final_response") or ""
+         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
+         interrupted = bool(result.get("interrupted")) or cancelled
+         # Hermes' local "waiting for model response" interrupt status is metadata,
+@@ -1993,12 +1994,18 @@ class HermesACPAgent(acp.Agent):
+     # ---- Model switching (ACP protocol method) -------------------------------
+ 
+     async def set_session_model(
+-        self, model_id: str, session_id: str, **kwargs: Any
++        self, model_id: str | None, session_id: str, **kwargs: Any
+     ) -> SetSessionModelResponse | None:
+         """Switch the model for a session (called by ACP protocol)."""
+         state = self.session_manager.get_session(session_id)
+         if state:
+             current_provider = getattr(state.agent, "provider", None)
++            if not str(model_id or "").strip():
++                logger.info(
++                    "Session %s: ignoring blank ACP model switch request",
++                    session_id,
++                )
++                return SetSessionModelResponse()
+             requested_provider, resolved_model = self._resolve_model_selection(
+                 model_id,
+                 current_provider or "openrouter",
+diff --git a/tests/acp_adapter/test_acp_commands.py b/tests/acp_adapter/test_acp_commands.py
+index 4a95367a6..002ef52b2 100644
+--- a/tests/acp_adapter/test_acp_commands.py
++++ b/tests/acp_adapter/test_acp_commands.py
+@@ -181,6 +181,20 @@ async def test_acp_queue_slash_command_adds_next_turn_without_running_now():
+     assert fake.runs == []
+ 
+ 
++@pytest.mark.asyncio
++async def test_acp_null_model_switch_is_ignored():
++    acp_agent, state, fake, _conn = make_agent_and_state()
++
++    response = await acp_agent.set_session_model(
++        session_id=state.session_id,
++        model_id=None,
++    )
++
++    assert response is not None
++    assert state.model == "fake-model"
++    assert state.agent is fake
++
++
+ @pytest.mark.asyncio
+ async def test_acp_prompt_drains_queued_turns_after_current_run():
+     acp_agent, state, fake, conn = make_agent_and_state()
+@@ -196,3 +210,29 @@ async def test_acp_prompt_drains_queued_turns_after_current_run():
+     assert state.queued_prompts == []
+     agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
+     assert len(agent_messages) >= 2
++
++
++class InterruptedWithoutResponseAgent(FakeAgent):
++    def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
++        self.runs.append(user_message)
++        return {"final_response": None, "interrupted": True, "messages": list(conversation_history or [])}
++
++
++@pytest.mark.asyncio
++async def test_acp_interrupted_turn_with_none_final_response_does_not_crash():
++    fake = InterruptedWithoutResponseAgent()
++    manager = SessionManager(agent_factory=lambda **kwargs: fake, db=NoopDb())
++    acp_agent = HermesACPAgent(session_manager=manager)
++    state = manager.create_session(cwd=".")
++    conn = CaptureConn()
++    acp_agent.on_connect(conn)
++
++    response = await acp_agent.prompt(
++        session_id=state.session_id,
++        prompt=[TextContentBlock(type="text", text="stop this turn")],
++    )
++
++    assert response.stop_reason == "end_turn"
++    assert fake.runs == ["stop this turn"]
++    assert state.is_running is False
++    assert state.current_prompt_text == ""
