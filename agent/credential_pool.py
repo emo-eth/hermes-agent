@@ -125,6 +125,7 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    "model_exhaustions",
 })
 
 
@@ -332,6 +333,9 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
             parsed_reset_at = time.time() + retry_delay_seconds
     if parsed_reset_at is not None:
         normalized["reset_at"] = parsed_reset_at
+    model = error_context.get("model") or error_context.get("requested_model")
+    if isinstance(model, str) and model.strip():
+        normalized["model"] = model.strip()
     return normalized
 
 
@@ -344,6 +348,116 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if entry.last_status_at:
         return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
     return None
+
+
+def _normalize_model_name(model: Optional[str]) -> str:
+    return (model or "").strip().lower()
+
+
+def _entry_model_exhaustions(entry: PooledCredential) -> Dict[str, Any]:
+    raw = entry.extra.get("model_exhaustions") if isinstance(entry.extra, dict) else None
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _model_exhausted_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
+    model_key = _normalize_model_name(model)
+    if not model_key:
+        return None
+    payload = _entry_model_exhaustions(entry).get(model_key)
+    if not isinstance(payload, dict):
+        return None
+    reset_at = _parse_absolute_timestamp(payload.get("last_error_reset_at"))
+    if reset_at is not None:
+        return reset_at
+    status_at = _parse_absolute_timestamp(payload.get("last_status_at"))
+    if status_at is None:
+        return None
+    code = payload.get("last_error_code")
+    try:
+        code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        code = None
+    return status_at + _exhausted_ttl(code)
+
+
+def _is_model_scoped_codex_usage_limit(
+    provider: str,
+    status_code: Optional[int],
+    normalized_error: Dict[str, Any],
+) -> bool:
+    """True when a Codex quota error should quarantine only one model."""
+    if (provider or "").strip().lower() != "openai-codex":
+        return False
+    if status_code not in {None, 400, 402, 429}:
+        return False
+    if not _normalize_model_name(normalized_error.get("model")):
+        return False
+    haystack = " ".join(
+        str(normalized_error.get(key) or "").lower()
+        for key in ("reason", "message")
+    )
+    return any(
+        token in haystack
+        for token in (
+            "usage_limit_reached",
+            "usage limit reached",
+            "usage limit has been reached",
+            "gousagelimit",
+            "weekly limit",
+            "5-hour limit",
+            "5h limit",
+        )
+    )
+
+
+def _with_model_exhaustion(
+    entry: PooledCredential,
+    *,
+    model: str,
+    status_code: Optional[int],
+    normalized_error: Dict[str, Any],
+) -> PooledCredential:
+    model_key = _normalize_model_name(model)
+    exhaustions = _entry_model_exhaustions(entry)
+    exhaustions[model_key] = {
+        "model": model,
+        "last_status_at": time.time(),
+        "last_error_code": status_code,
+        "last_error_reason": normalized_error.get("reason"),
+        "last_error_message": normalized_error.get("message"),
+        "last_error_reset_at": normalized_error.get("reset_at"),
+    }
+    extra = dict(entry.extra or {})
+    extra["model_exhaustions"] = exhaustions
+    return replace(entry, extra=extra)
+
+
+def _clear_expired_model_exhaustions(
+    entry: PooledCredential,
+    now: float,
+) -> Tuple[PooledCredential, bool]:
+    exhaustions = _entry_model_exhaustions(entry)
+    if not exhaustions:
+        return entry, False
+    retained: Dict[str, Any] = {}
+    changed = False
+    for model_key, payload in exhaustions.items():
+        if not isinstance(payload, dict):
+            changed = True
+            continue
+        until = _model_exhausted_until(entry, model_key)
+        if until is not None and now >= until:
+            changed = True
+            continue
+        retained[model_key] = payload
+    if not changed:
+        return entry, False
+    extra = dict(entry.extra or {})
+    if retained:
+        extra["model_exhaustions"] = retained
+    else:
+        extra.pop("model_exhaustions", None)
+    return replace(entry, extra=extra), True
 
 
 def _normalize_custom_pool_name(name: str) -> str:
@@ -574,6 +688,16 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+        if _is_model_scoped_codex_usage_limit(self.provider, status_code, normalized_error):
+            updated = _with_model_exhaustion(
+                entry,
+                model=normalized_error["model"],
+                status_code=status_code,
+                normalized_error=normalized_error,
+            )
+            self._replace_entry(entry, updated)
+            self._persist()
+            return updated
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
         # transition to STATUS_DEAD instead of STATUS_EXHAUSTED.  Without this,
         # a revoked credential gets a 1-hour TTL cooldown and then re-enters
@@ -1362,22 +1486,42 @@ class CredentialPool:
             return False
         return False
 
-    def select(self) -> Optional[PooledCredential]:
+    def select(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:
-            return self._select_unlocked()
+            return self._select_unlocked(model=model)
 
-    def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
+    def _available_entries(
+        self,
+        *,
+        clear_expired: bool = False,
+        refresh: bool = False,
+        model: Optional[str] = None,
+    ) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
         When *clear_expired* is True, entries whose cooldown has elapsed are
         reset to STATUS_OK and persisted.  When *refresh* is True, entries
-        that need a token refresh are refreshed (skipped on failure).
+        that need a token refresh are refreshed (skipped on failure).  When
+        *model* is set, entries with an active model-specific Codex quota
+        cooldown for that model are skipped without marking the credential
+        globally exhausted.
         """
         now = time.time()
+        model_key = _normalize_model_name(model)
         cleared_any = False
         entries_to_prune: List[str] = []
         available: List[PooledCredential] = []
         for entry in self._entries:
+            if clear_expired:
+                cleaned, changed = _clear_expired_model_exhaustions(entry, now)
+                if changed:
+                    self._replace_entry(entry, cleaned)
+                    entry = cleaned
+                    cleared_any = True
+            if model_key:
+                exhausted_until = _model_exhausted_until(entry, model_key)
+                if exhausted_until is not None and now < exhausted_until:
+                    continue
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
             # by other processes (Claude Code CLI, other Hermes profiles).
@@ -1481,8 +1625,8 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+    def _select_unlocked(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
+        available = self._available_entries(clear_expired=True, refresh=True, model=model)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1514,11 +1658,13 @@ class CredentialPool:
         self._current_id = entry.id
         return entry
 
-    def peek(self) -> Optional[PooledCredential]:
+    def peek(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         current = self.current()
         if current is not None:
+            if model and _model_exhausted_until(current, model):
+                return None
             return current
-        available = self._available_entries()
+        available = self._available_entries(model=model)
         return available[0] if available else None
 
     def mark_exhausted_and_rotate(
@@ -1527,8 +1673,13 @@ class CredentialPool:
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
+            if model:
+                context = dict(error_context or {})
+                context.setdefault("model", model)
+                error_context = context
             entry = None
             if api_key_hint:
                 # Prefer the specific entry whose API key matches the one that
@@ -1555,13 +1706,18 @@ class CredentialPool:
                     "permanently failed, will NOT re-enter rotation until re-auth",
                     _label, status_code, updated_entry.last_error_reason or "unknown",
                 )
+            elif model and _model_exhausted_until(updated_entry, model):
+                logger.info(
+                    "credential pool: marking %s model %s exhausted (status=%s), rotating",
+                    _label, model, status_code,
+                )
             else:
                 logger.info(
                     "credential pool: marking %s exhausted (status=%s), rotating",
                     _label, status_code,
                 )
             self._current_id = None
-            next_entry = self._select_unlocked()
+            next_entry = self._select_unlocked(model=model)
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
@@ -1624,7 +1780,10 @@ class CredentialPool:
         count = 0
         new_entries = []
         for entry in self._entries:
-            if entry.last_status or entry.last_status_at or entry.last_error_code:
+            has_model_exhaustions = bool(_entry_model_exhaustions(entry))
+            if entry.last_status or entry.last_status_at or entry.last_error_code or has_model_exhaustions:
+                extra = dict(entry.extra or {})
+                extra.pop("model_exhaustions", None)
                 new_entries.append(
                     replace(
                         entry,
@@ -1634,6 +1793,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        extra=extra,
                     )
                 )
                 count += 1

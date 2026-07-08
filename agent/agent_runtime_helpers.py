@@ -753,6 +753,14 @@ def recover_with_credential_pool(
             return False, has_retried_429
 
     effective_reason = classified_reason
+    active_model = (getattr(agent, "model", "") or "").strip() or None
+
+    def _mark_and_rotate_pool(*, rotate_status: Optional[int]) -> Optional[Any]:
+        kwargs: Dict[str, Any] = {"status_code": rotate_status, "error_context": error_context}
+        if active_model:
+            kwargs["model"] = active_model
+        return pool.mark_exhausted_and_rotate(**kwargs)
+
     if effective_reason is None:
         if status_code == 402:
             effective_reason = FailoverReason.billing
@@ -782,7 +790,7 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = _mark_and_rotate_pool(rotate_status=rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -806,7 +814,7 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            next_entry = _mark_and_rotate_pool(rotate_status=rotate_status)
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -830,7 +838,7 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = _mark_and_rotate_pool(rotate_status=rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -930,7 +938,7 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = _mark_and_rotate_pool(rotate_status=rotate_status)
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",

@@ -3282,3 +3282,120 @@ def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
     assert synced.last_error_reason is None
     assert synced.last_error_message is None
     assert synced.last_error_reset_at is None
+
+def test_openai_codex_usage_limit_is_model_scoped(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "codex-oauth",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "***",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    rotated = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        model="codex-5.3-mini",
+        error_context={
+            "reason": "usage_limit_reached",
+            "message": "Codex mini weekly usage limit reached. Resets in 4hr 5min.",
+        },
+    )
+
+    assert rotated is None
+    entry = pool.entries()[0]
+    assert entry.last_status is None
+    assert "codex-5.3-mini" in entry.extra["model_exhaustions"]
+    assert pool.select(model="codex-5.3-mini") is None
+
+    other_model = pool.select(model="gpt-5.5")
+    assert other_model is not None
+    assert other_model.id == "cred-1"
+
+
+def test_model_scoped_exhaustion_expires_without_global_reset(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "codex-oauth",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "***",
+                        "model_exhaustions": {
+                            "codex-5.3-mini": {
+                                "model": "codex-5.3-mini",
+                                "last_status_at": time.time() - 7200,
+                                "last_error_code": 429,
+                                "last_error_reason": "usage_limit_reached",
+                            }
+                        },
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select(model="codex-5.3-mini")
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert "model_exhaustions" not in entry.extra
+
+
+def test_non_codex_usage_limit_still_marks_credential_exhausted(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "router-key",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    pool.mark_exhausted_and_rotate(
+        status_code=429,
+        model="some-model",
+        error_context={"reason": "usage_limit_reached", "message": "usage limit reached"},
+    )
+
+    entry = pool.entries()[0]
+    assert entry.last_status == "exhausted"
+    assert "model_exhaustions" not in entry.extra
