@@ -4838,6 +4838,118 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_wiki_ingest_queue_channels(self) -> set:
+        """Return Discord channel IDs/names whose messages enqueue wiki ingest.
+
+        This is intentionally separate from ``ignored_channels``: #wiki-inbox is
+        non-conversational, but it still needs to preserve user input by
+        enqueueing URL-bearing messages before the normal agent-response gates
+        drop the channel.
+        """
+        raw = self.config.extra.get("wiki_ingest_queue_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_WIKI_INGEST_QUEUE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _discord_wiki_ingest_queue_script(self) -> str:
+        raw = self.config.extra.get("wiki_ingest_queue_script")
+        if raw is None:
+            raw = os.getenv("DISCORD_WIKI_INGEST_QUEUE_SCRIPT", "")
+        return str(raw or "").strip()
+
+    async def _maybe_enqueue_wiki_ingest_event(self, message: Any, channel_keys: set[str]) -> bool:
+        """Enqueue #wiki-inbox URL drops and suppress normal agent dispatch.
+
+        Returns True when the message belongs to a wiki-ingest queue channel,
+        whether or not it contained URLs. The channel is a queue surface, not a
+        chat surface, so falling through to BMO would be a duplicate/side effect.
+        """
+        queue_channels = self._discord_wiki_ingest_queue_channels()
+        if not queue_channels or "*" not in queue_channels and not (channel_keys & queue_channels):
+            return False
+
+        content = str(getattr(message, "content", "") or "")
+        if not re.search(r"https?://", content, re.IGNORECASE):
+            logger.debug("[%s] Wiki ingest queue channel message had no URL: %s", self.name, getattr(message, "id", ""))
+            return True
+
+        script = self._discord_wiki_ingest_queue_script()
+        if not script:
+            logger.error("[%s] Wiki ingest queue channel configured but wiki_ingest_queue_script is empty", self.name)
+            with suppress(Exception):
+                await message.channel.send("⚠️ Wiki ingest is configured for this channel, but the enqueue script is missing; this link was not queued.")
+            return True
+        if not os.path.exists(script) or not os.access(script, os.X_OK):
+            logger.error("[%s] Wiki ingest enqueue script is unavailable: %s", self.name, script)
+            with suppress(Exception):
+                await message.channel.send("⚠️ Wiki ingest enqueue script is unavailable; this link was not queued.")
+            return True
+
+        channel_id = str(getattr(getattr(message, "channel", None), "id", "") or "")
+        thread_id = channel_id
+        payload = {
+            "source_platform": "discord",
+            "channel_id": channel_id,
+            "message_id": str(getattr(message, "id", "") or ""),
+            "thread_id": thread_id,
+            "author_id": str(getattr(getattr(message, "author", None), "id", "") or ""),
+            "author_name": str(
+                getattr(getattr(message, "author", None), "display_name", "")
+                or getattr(getattr(message, "author", None), "name", "")
+                or ""
+            ),
+            "message_content": content,
+        }
+
+        def _run_enqueue() -> subprocess.CompletedProcess:
+            env = os.environ.copy()
+            env["WIKI_INGEST_EVENT_JSON"] = json.dumps(payload)
+            return subprocess.run(
+                [script],
+                capture_output=True,
+                text=True,
+                timeout=45,
+                stdin=subprocess.DEVNULL,
+                env=env,
+            )
+
+        try:
+            result = await asyncio.to_thread(_run_enqueue)
+        except Exception as exc:
+            logger.warning("[%s] Wiki ingest immediate enqueue crashed for message %s: %s", self.name, payload["message_id"], exc, exc_info=True)
+            with suppress(Exception):
+                await message.channel.send("⚠️ Wiki ingest enqueue crashed before it could queue this link.")
+            return True
+
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        if result.returncode != 0:
+            logger.warning(
+                "[%s] Wiki ingest immediate enqueue failed for message %s: exit=%s stdout=%r stderr=%r",
+                self.name,
+                payload["message_id"],
+                result.returncode,
+                stdout[:500],
+                stderr[:500],
+            )
+            queued_hint = "event queued" in stdout.lower() or "queued" in stdout.lower()
+            notice = (
+                "⚠️ Wiki ingest queued this, but the acknowledgement/drain hook reported an error."
+                if queued_hint
+                else "⚠️ Wiki ingest enqueue failed; this link was not queued."
+            )
+            with suppress(Exception):
+                await message.channel.send(notice)
+            return True
+
+        logger.info("[%s] Wiki ingest immediate enqueue: %s", self.name, stdout or "ok")
+        return True
+
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
 
@@ -6182,6 +6294,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 if "*" not in allowed_channels and not (channel_keys & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
                     return
+
+            if await self._maybe_enqueue_wiki_ingest_event(message, channel_keys):
+                return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")

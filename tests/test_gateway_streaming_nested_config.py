@@ -41,3 +41,20 @@ class TestStreamingConfigNested:
         })
         assert cfg.streaming.enabled is True
         assert cfg.streaming.transport == "edit"
+
+
+class TestDiscordWikiIngestConfig:
+    def test_top_level_discord_wiki_ingest_queue_keys_bridge_to_extra(self):
+        cfg = _load_with_yaml_dict({
+            "discord": {
+                "enabled": True,
+                "wiki_ingest_queue_channels": "1501971993405292796",
+                "wiki_ingest_queue_script": "/tmp/wiki-enqueue.sh",
+            }
+        })
+
+        from gateway.config import Platform
+
+        discord_cfg = cfg.platforms[Platform.DISCORD]
+        assert discord_cfg.extra["wiki_ingest_queue_channels"] == "1501971993405292796"
+        assert discord_cfg.extra["wiki_ingest_queue_script"] == "/tmp/wiki-enqueue.sh"
