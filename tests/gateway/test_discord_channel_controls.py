@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
+import json
+import os
 import sys
 
 import pytest
@@ -114,6 +116,51 @@ async def test_ignored_channel_blocks_message(adapter, monkeypatch):
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ignored_wiki_queue_channel_enqueues_before_ignoring(adapter, monkeypatch, tmp_path):
+    """A queue-only wiki channel should enqueue links without invoking chat."""
+    out = tmp_path / "payload.json"
+    script = tmp_path / "enqueue.sh"
+    script.write_text("#!/usr/bin/env bash\nprintf '%s' \"$WIKI_INGEST_EVENT_JSON\" > \"$OUT\"\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("OUT", str(out))
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "500")
+    monkeypatch.setenv("DISCORD_WIKI_INGEST_QUEUE_CHANNELS", "500")
+    monkeypatch.setenv("DISCORD_WIKI_INGEST_QUEUE_SCRIPT", str(script))
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=500), content="https://example.com/source")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["channel_id"] == "500"
+    assert payload["thread_id"] == "500"
+    assert payload["message_id"] == "123"
+    assert payload["message_content"] == "https://example.com/source"
+
+
+@pytest.mark.asyncio
+async def test_ignored_wiki_queue_channel_skips_non_links(adapter, monkeypatch, tmp_path):
+    out = tmp_path / "payload.json"
+    script = tmp_path / "enqueue.sh"
+    script.write_text("#!/usr/bin/env bash\nprintf '%s' \"$WIKI_INGEST_EVENT_JSON\" > \"$OUT\"\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("OUT", str(out))
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "500")
+    monkeypatch.setenv("DISCORD_WIKI_INGEST_QUEUE_CHANNELS", "500")
+    monkeypatch.setenv("DISCORD_WIKI_INGEST_QUEUE_SCRIPT", str(script))
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=500), content="just notes")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+    assert not out.exists()
 
 
 @pytest.mark.asyncio
@@ -397,6 +444,27 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_wiki_ingest_queue_settings(monkeypatch, tmp_path):
+    """config.yaml bridges queue-only wiki ingest settings to env vars."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "wiki_ingest_queue_channels": ["500"],
+            "wiki_ingest_queue_script": "/tmp/wiki-enqueue.sh",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_WIKI_INGEST_QUEUE_CHANNELS", "")
+    monkeypatch.setenv("DISCORD_WIKI_INGEST_QUEUE_SCRIPT", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    assert os.getenv("DISCORD_WIKI_INGEST_QUEUE_CHANNELS") == "500"
+    assert os.getenv("DISCORD_WIKI_INGEST_QUEUE_SCRIPT") == "/tmp/wiki-enqueue.sh"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

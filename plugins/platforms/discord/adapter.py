@@ -5772,6 +5772,85 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
+    async def _maybe_enqueue_wiki_ingest_event(
+        self,
+        message: DiscordMessage,
+        channel_keys: Any,
+        parent_channel_id: Optional[str],
+        raw_content: str,
+    ) -> None:
+        """Fire the wiki-ingest queue hook for configured Discord channels.
+
+        Wiki-inbox channels are intentionally also listed in
+        ``DISCORD_IGNORED_CHANNELS`` so the normal conversational agent never
+        responds there. This hook runs before the ignored-channel return and
+        gives those messages a narrow event path into the durable wiki queue.
+        """
+        queue_channels_raw = os.getenv("DISCORD_WIKI_INGEST_QUEUE_CHANNELS", "")
+        queue_channels = {ch.strip() for ch in queue_channels_raw.split(",") if ch.strip()}
+        if not queue_channels or not (channel_keys & queue_channels):
+            return
+        if not re.search(r"https?://", raw_content or ""):
+            return
+        author = getattr(message, "author", None)
+        if getattr(author, "bot", False):
+            logger.debug("[%s] Skipping wiki-ingest enqueue for bot-authored message %s", self.name, getattr(message, "id", ""))
+            return
+        script = os.getenv("DISCORD_WIKI_INGEST_QUEUE_SCRIPT", "").strip()
+        if not script:
+            logger.error("[%s] Wiki-ingest queue channel matched but DISCORD_WIKI_INGEST_QUEUE_SCRIPT is unset", self.name)
+            return
+        script_path = _Path(script)
+        if not script_path.exists():
+            logger.error("[%s] Wiki-ingest queue script does not exist: %s", self.name, script)
+            return
+        channel_id = str(parent_channel_id or getattr(message.channel, "id", ""))
+        thread_id = str(getattr(message.channel, "id", channel_id))
+        author_name = (
+            getattr(author, "global_name", None)
+            or getattr(author, "display_name", None)
+            or getattr(author, "name", None)
+            or ""
+        )
+        payload = {
+            "source_platform": "discord",
+            "channel_id": channel_id,
+            "message_id": str(getattr(message, "id", "")),
+            "thread_id": thread_id,
+            "author_id": str(getattr(author, "id", "")),
+            "author_name": str(author_name),
+            "message_content": raw_content,
+        }
+        env = os.environ.copy()
+        env["WIKI_INGEST_EVENT_JSON"] = json.dumps(payload)
+
+        def _run_hook() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [script],
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+
+        try:
+            result = await asyncio.to_thread(_run_hook)
+        except Exception:
+            logger.exception("[%s] Wiki-ingest enqueue hook crashed for Discord message %s", self.name, payload["message_id"])
+            return
+        if result.returncode != 0:
+            logger.error(
+                "[%s] Wiki-ingest enqueue hook failed for Discord message %s: rc=%s stdout=%r stderr=%r",
+                self.name,
+                payload["message_id"],
+                result.returncode,
+                result.stdout[-1000:],
+                result.stderr[-1000:],
+            )
+        elif result.stdout:
+            logger.info("[%s] Wiki-ingest enqueue hook: %s", self.name, result.stdout.strip())
+
     async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -5822,6 +5901,8 @@ class DiscordAdapter(BasePlatformAdapter):
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
+
+            await self._maybe_enqueue_wiki_ingest_event(message, channel_keys, parent_channel_id, raw_content)
 
             # Check allowed channels - if set, only respond in these channels
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
@@ -7710,6 +7791,14 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_AUTO_THREAD_ARCHIVE_DURATION"] = str(discord_cfg["auto_thread_archive_duration"])
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+    wqc = discord_cfg.get("wiki_ingest_queue_channels")
+    if wqc is not None and not os.getenv("DISCORD_WIKI_INGEST_QUEUE_CHANNELS"):
+        if isinstance(wqc, list):
+            wqc = ",".join(str(v) for v in wqc)
+        os.environ["DISCORD_WIKI_INGEST_QUEUE_CHANNELS"] = str(wqc)
+    wqs = discord_cfg.get("wiki_ingest_queue_script")
+    if wqs is not None and not os.getenv("DISCORD_WIKI_INGEST_QUEUE_SCRIPT"):
+        os.environ["DISCORD_WIKI_INGEST_QUEUE_SCRIPT"] = str(wqs)
     # ignored_channels: channels where bot never responds (even when mentioned)
     ic = discord_cfg.get("ignored_channels")
     if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
